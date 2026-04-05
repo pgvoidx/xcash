@@ -1,0 +1,48 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#: xcash/ethereum/models.py:35 xcash/projects/models.py:106
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-09-07 13:29+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+# Manually added for django-unfold
+msgid "No results found"
+msgstr "无数据"
+
+msgid "This page yielded into no results. Create a new item or reset your filters."
+msgstr "这个页面没有返回任何数据。请创建数据或者重置过滤器。"
+
+msgid "Reset filters"
+msgstr "重置过滤器"
+
+msgid "Type to search"
+msgstr "输入以搜索"
+
+msgid "You have been successfully logged out from the administration"
+msgstr "您已登出"
+
+msgid "Select value"
+msgstr "请选择"
+
+msgid "Return to site"
+msgstr "Xcash"
+
+msgid "Select action"
+msgstr "选择操作"
+
+msgid "Run"
+msgstr "执行"

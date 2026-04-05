@@ -1,0 +1,38 @@
+{% extends 'unfold/layouts/unauthenticated.html' %}
+
+{% load i18n unfold %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    {{ form.media }}
+{% endblock %}
+
+{% block title %}
+    {{ title }} | {{ site_title }}
+{% endblock %}
+
+{% block content %}
+    {% include "unfold/helpers/unauthenticated_title.html" with title=site_title|default:_('Django site admin') subtitle=_('两步验证') %}
+
+    {% include "unfold/helpers/messages.html" %}
+
+    {% if form.errors or form.non_field_errors %}
+        <div class="flex flex-col gap-4 mb-8 *:mb-0">
+            {% include "unfold/helpers/messages/errornote.html" with errors=form.errors %}
+            {% include "unfold/helpers/messages/error.html" with errors=form.non_field_errors %}
+        </div>
+    {% endif %}
+
+    <form action="{{ app_path }}" method="post">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+
+        {% include "unfold/helpers/field.html" with field=form.token %}
+
+        <div class="flex flex-col gap-3 mt-6">
+            {% component "unfold/components/button.html" with submit=1 variant="primary" class="submit-row w-full" %}
+                {% translate '验证并登录' %}
+            {% endcomponent %}
+        </div>
+    </form>
+{% endblock %}

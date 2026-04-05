@@ -1,0 +1,299 @@
+[project]
+name = "xcash"
+version = "0.1.0"
+description = "Crypto finance."
+requires-python = "==3.13.*"
+dependencies = [
+    "web3==7.14.1",
+    "bip-utils==2.12.1",
+    # Bitcoin：P2PKH 交易构建、UTXO 选择与 secp256k1 签名
+    "bit>=0.8.0",
+    "redis==7.4.0",
+    "hiredis==3.3.1",
+    "cryptography==46.0.6",
+    "ipaddress==1.0.23",
+    "arrow==1.4.0",
+    "ulid-py==1.1.0",
+    "whitenoise==6.12.0",
+    "argon2-cffi==25.1.0",
+    "shortuuid==1.0.13",
+    "httpx==0.28.1",
+    # Django
+    "django==5.2.12",
+    "django-extensions==4.1",
+    "django-environ==0.13.0",
+    "django-model-utils==5.0.0",
+    "django-unfold==0.87.0",
+    "django-sequences==3.0",
+    "django-simple-history==3.11.0",
+    "djangorestframework==3.17.1",
+    "drf-extensions==0.8.0",
+    "django-redis==6.0.0",
+    "django-cors-headers==4.9.0",
+    "django-smart-ratelimit[redis]==2.2.0",
+    # Celery
+    "celery==5.6.3",
+    "django-celery-results==2.6.0",
+    # Logging
+    "structlog==25.5.0",
+    # Sentry: 可选，设置 SENTRY_DSN 环境变量后生效
+    "sentry-sdk[django]==2.57.0",
+    "django-otp>=1.7.0",
+    "qrcode>=8.2",
+]
+[dependency-groups]
+dev = [
+    "celery-types>=0.26.0",
+    "watchfiles==1.1.1",
+    "werkzeug[watchdog]==3.1.6",
+    "ipdb==0.13.13",
+    "psycopg[binary]==3.3.3",
+    # Testing
+    "mypy==1.20.0",
+    "django-stubs[compatible-mypy]==6.0.2",
+    "pytest==8.3.5",
+    "pytest-sugar==1.0.0",
+    "djangorestframework-stubs[compatible-mypy]==3.16.9",
+    # Documents
+    "sphinx==9.1.0",
+    "sphinx-autobuild==2025.8.25",
+    # Code quality
+    "ruff==0.15.8",
+    "coverage==7.13.5",
+    "djlint==1.36.4",
+    "pylint-django==2.7.0",
+    "pylint-celery==0.3",
+    "pre-commit==4.5.1",
+    # Django
+    "factory-boy==3.3.3",
+    "django-debug-toolbar==6.2.0",
+    "django-coverage-plugin==3.2.0",
+    "pytest-django==4.12.0",
+]
+production = [
+    "psycopg[c]==3.3.3",
+    "gunicorn==23.0.0",
+]
+
+# ==== pytest ====
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "--ds=config.settings.test --reuse-db --import-mode=importlib"
+# 根仓库 pytest 只负责主应用 xcash；独立 signer 需要在 signer/ 目录下按自己的 settings 单独执行。
+testpaths = ["xcash"]
+python_files = [
+    "tests.py",
+    "test_*.py",
+]
+filterwarnings = [
+    "ignore:websockets\\.legacy is deprecated;.*:DeprecationWarning",
+]
+
+# ==== Coverage ====
+[tool.coverage.run]
+include = ["xcash/**"]
+omit = ["*/migrations/*", "*/tests/*"]
+plugins = ["django_coverage_plugin"]
+
+# ==== mypy ====
+[tool.mypy]
+python_version = "3.13.9"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+plugins = [
+    "mypy_django_plugin.main",
+    "mypy_drf_plugin.main",
+]
+
+[[tool.mypy.overrides]]
+# Django migrations should not produce any errors:
+module = "*.migrations.*"
+ignore_errors = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.dev"
+
+# ==== djLint ====
+[tool.djlint]
+blank_line_after_tag = "load,extends"
+close_void_tags = true
+format_css = true
+format_js = true
+# TODO: remove T002 when fixed https://github.com/djlint/djLint/issues/687
+ignore = "H006,H030,H031,T002"
+include = "H017,H035"
+indent = 2
+max_line_length = 119
+profile = "django"
+
+[tool.djlint.css]
+indent_size = 2
+
+[tool.djlint.js]
+indent_size = 2
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "*/migrations/*.py",
+    "staticfiles/*"
+]
+# Same as Django: https://github.com/cookiecutter/cookiecutter-django/issues/4792.
+line-length = 88
+indent-width = 4
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "F",
+    "E",
+    "W",
+    "C90",
+    "I",
+    "N",
+    "UP",
+    "YTT",
+    # "ANN", # flake8-annotations: we should support this in the future but 100+ errors atm
+    "ASYNC",
+    "S",
+    "BLE",
+    "FBT",
+    "B",
+    "A",
+    "COM",
+    "C4",
+    "DTZ",
+    "T10",
+    "DJ",
+    "EM",
+    "EXE",
+    "FA",
+    'ISC',
+    "ICN",
+    "G",
+    'INP',
+    'PIE',
+    "T20",
+    'PYI',
+    'PT',
+    "Q",
+    "RSE",
+    "RET",
+    "SLF",
+    "SLOT",
+    "SIM",
+    "TID",
+    "TCH",
+    "INT",
+    # "ARG", # Unused function argument
+    "PTH",
+    "ERA",
+    "PD",
+    "PGH",
+    "PL",
+    "TRY",
+    "FLY",
+    # "NPY",
+    # "AIR",
+    "PERF",
+    # "FURB",
+    # "LOG",
+    "RUF"
+]
+ignore = [
+    "S101", # Use of assert detected https://docs.astral.sh/ruff/rules/assert/
+    "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+    "SIM102", # sometimes it's better to nest
+    "UP038", # Checks for uses of isinstance/issubclass that take a tuple
+    "PLR0913", # 限制参数为5个
+    "E402", # import 必须在顶部
+    "BLE001", # 异常捕获
+    "RET505", # return后的else是不必要的，但本项目以代码逻辑清晰优先
+    "SIM108",
+    "E501", # Line too long
+    "PGH004", # noqa
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "COM812", # 尾随逗号问题
+    "PLR2004", # status code问题
+    "RUF100", # noqa问题
+    # 测试：项目使用 Django TestCase，必须用 unittest 风格断言（assertEqual/assertTrue 等）
+    "PT009",
+    "PT027",
+    # 异常消息风格：项目全库直接在 raise 里写字符串，统一豁免
+    "EM101",
+    "EM102",
+    "TRY003",
+    # 测试/配置文件中的已知 hardcoded secret（测试凭据、设置默认值）
+    "S105",
+    "S106",
+    # Django 测试里 _ 前缀参数模式，属于项目约定（49处）
+    "PT019",
+    # 测试代码 subprocess，属于预期行为
+    "S603",
+    # 跨层访问私有方法（service 调用 model 的 _helper 属于设计决策，非安全问题）
+    "SLF001",
+    # 中文注释常被误判为注释掉的代码，ERA001 在中文项目里误报率过高
+    "ERA001",
+]
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+# The fixes in extend-unsafe-fixes will require
+# provide the `--unsafe-fixes` flag when fixing.
+extend-unsafe-fixes = [
+    "UP038"
+]
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+force-single-line = true
+# 声明本地 app，确保排序为 stdlib → third-party → first-party
+known-first-party = [
+    "alerts",
+    "bitcoin",
+    "chains",
+    "common",
+    "config",
+    "core",
+    "currencies",
+    "deposits",
+    "evm",
+    "invoices",
+    "projects",
+    "users",
+    "webhooks",
+    "withdrawals",
+]

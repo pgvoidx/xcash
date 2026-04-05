@@ -1,0 +1,41 @@
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="2500"
+     height="2500">
+    <defs>
+        <!-- 中心区域渐变，增加深度 -->
+        <linearGradient id="centerGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#1E293B"/>
+            <stop offset="100%" stop-color="#0F172A"/>
+        </linearGradient>
+        <!-- 右下臂渐变 -->
+        <linearGradient id="armBR" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#2563EB"/>
+            <stop offset="100%" stop-color="#1D4ED8"/>
+        </linearGradient>
+        <!-- 圆角裁切 -->
+        <clipPath id="roundClip">
+            <rect width="80" height="80" rx="16" ry="16"/>
+        </clipPath>
+    </defs>
+    <g clip-path="url(#roundClip)">
+        <!-- 背景 -->
+        <rect width="80" height="80" fill="none"/>
+        <!-- 右下臂 - primary-500 → 600 渐变 -->
+        <path fill="url(#armBR)"
+              d="M54.1 40L40 54.1l11.4 11.4c3.3 3.3 8.8 3.3 12.2 0l1.9-1.9c3.3-3.3 3.3-8.8 0-12.2L54.1 40z"/>
+        <!-- 左上臂 - primary-400，稍偏冷调 -->
+        <path fill="#5B9CF6"
+              d="M28.6 14.5c-3.3-3.3-8.8-3.3-12.2 0l-1.9 1.9c-3.3 3.3-3.3 8.8 0 12.2L40 54.1 54.1 40 28.6 14.5z"/>
+        <!-- 左下臂 - primary-800，更深沉 -->
+        <path fill="#1E3A8A"
+              d="M14.5 51.4c-3.3 3.3-3.3 8.8 0 12.2l1.9 1.9c3.3 3.3 8.8 3.3 12.2 0L40 54.1 25.9 40 14.5 51.4z"/>
+        <!-- 右上臂 - 金色，暗示金融属性 -->
+        <path fill="#E5A913"
+              d="M65.5 28.6c3.3-3.3 3.3-8.8 0-12.2l-1.9-1.9c-3.3-3.3-8.8-3.3-12.2 0L40 25.9 54.1 40l11.4-11.4z"/>
+        <!-- 中心钻石 - 深色渐变增加层次 -->
+        <path fill="url(#centerGrad)"
+              d="M40 32.1c-7 0-14.1 7.9-14.1 7.9L40 54.1 54.1 40S47 32.1 40 32.1z"/>
+        <!-- 对角装饰线 - primary-600 -->
+        <path transform="rotate(-45.098 48.776 48.842)" fill="#1D4ED8" opacity="0.9"
+              d="M38.8 46.4h19.9v4.9H38.8z"/>
+    </g>
+</svg>

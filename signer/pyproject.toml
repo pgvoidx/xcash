@@ -1,0 +1,36 @@
+[project]
+name = "xcash-signer"
+version = "0.1.0"
+description = "Standalone signer service for Xcash."
+requires-python = "==3.13.*"
+dependencies = [
+    "django==5.2.12",
+    "django-environ==0.13.0",
+    "djangorestframework==3.16.1",
+    "django-redis==6.0.0",
+    "redis==7.2.1",
+    "hiredis==3.3.0",
+    "web3==7.14.1",
+    "bip-utils==2.9.3",
+    "bit>=0.8.0",
+    "cryptography==46.0.5",
+    "psycopg[binary]==3.3.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.5",
+    "pytest-django==4.11.1",
+]
+production = [
+    "gunicorn==23.0.0",
+]
+
+[tool.pytest.ini_options]
+python_files = [
+    "tests.py",
+    "test_*.py",
+]
+# signer 子项目内直接执行 uv run pytest 时，默认走自己的测试 settings，
+# 避免再依赖手工导出 DJANGO_SETTINGS_MODULE 或本地 PostgreSQL/Redis。
+DJANGO_SETTINGS_MODULE = "config.test"

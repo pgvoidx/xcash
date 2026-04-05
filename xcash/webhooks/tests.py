@@ -1,0 +1,262 @@
+from unittest.mock import patch
+
+from django.core.cache import cache
+from django.test import TestCase
+from django.utils import timezone
+
+from chains.models import Wallet
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
+from core.models import PlatformSettings
+from projects.models import Project
+from webhooks.models import DeliveryAttempt
+from webhooks.models import WebhookEvent
+from webhooks.service import WebhookService
+from webhooks.tasks import deliver_event
+from webhooks.tasks import next_backoff
+
+
+def _make_project(**kwargs):
+    defaults = {
+        "name": f"Demo-{Project.objects.count()}",
+        "wallet": Wallet.objects.create(),
+        "webhook": "https://merchant.example.com/hook",
+        "webhook_open": True,
+    }
+    defaults.update(kwargs)
+    return Project.objects.create(**defaults)
+
+
+class WebhookServiceTests(TestCase):
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
+
+    @patch("webhooks.tasks.deliver_event.delay")
+    def test_create_event_enqueues_delivery_after_commit(self, deliver_event_mock):
+        # webhook 事件创建后必须显式在 on_commit 派发投递任务，而不是依赖 model signal。
+        project = _make_project()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            event = WebhookService.create_event(
+                project=project,
+                payload={"type": "deposit", "data": {"foo": "bar"}},
+            )
+
+        deliver_event_mock.assert_called_once_with(event.pk)
+
+    def test_next_backoff_uses_platform_settings_cap(self):
+        # Webhook 退避上限应可由平台参数中心调整，避免固定 120 秒无法匹配实际值守策略。
+        PlatformSettings.objects.create(webhook_delivery_max_backoff_seconds=20)
+
+        self.assertEqual(next_backoff(1), 4)
+        self.assertEqual(next_backoff(10), 20)
+
+
+class DeliverEventTests(TestCase):
+    """覆盖 deliver_event 各核心分支。"""
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        cache.clear()
+        super().tearDown()
+
+    def _create_event(self, project=None, **kwargs):
+        if project is None:
+            project = _make_project()
+        return WebhookEvent.objects.create(
+            project=project,
+            payload={"type": "test", "data": {}},
+            **kwargs,
+        )
+
+    # ── 成功路径 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_deliver_success_marks_event_succeeded(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "ok", "", 50)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
+        self.assertIsNotNone(event.delivered_at)
+        self.assertEqual(event.last_error, "")
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_deliver_success_resets_failed_count(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "ok", "", 50)
+        project = _make_project(failed_count=5)
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        project.refresh_from_db()
+        self.assertEqual(project.failed_count, 0)
+        self.assertTrue(project.webhook_open)
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_deliver_success_creates_attempt(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "ok", "", 50)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        self.assertEqual(DeliveryAttempt.objects.filter(event=event).count(), 1)
+        attempt = DeliveryAttempt.objects.get(event=event)
+        self.assertTrue(attempt.ok)
+        self.assertEqual(attempt.try_number, 1)
+
+    # ── 失败路径：5xx 可重试 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_5xx_retryable_sets_schedule_locked(self, mock_http):
+        mock_http.return_value = (False, 500, {}, "Internal Server Error", "", 50)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
+        self.assertGreater(event.schedule_locked_until, timezone.now())
+
+    # ── 失败路径：4xx 不可重试 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_4xx_marks_event_failed(self, mock_http):
+        mock_http.return_value = (False, 404, {}, "Not Found", "", 50)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+    # ── 失败路径：3xx 不可重试（修复后行为）──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_3xx_marks_event_failed(self, mock_http):
+        """3xx 重定向不应被视为可重试，httpx 不跟随重定向，重试无意义。"""
+        mock_http.return_value = (False, 301, {}, "", "", 50)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+    # ── 网络错误可重试 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_network_error_retryable(self, mock_http):
+        mock_http.return_value = (False, None, None, "", "ConnectError: ...", 5000)
+        event = self._create_event()
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNotNone(event.schedule_locked_until)
+
+    # ── 熔断机制 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_breaker_trips_after_threshold(self, mock_http):
+        """连续失败达到阈值后自动关闭项目 webhook。"""
+        PlatformSettings.objects.create(webhook_delivery_breaker_threshold=2)
+        mock_http.return_value = (False, 500, {}, "error", "", 50)
+        project = _make_project(failed_count=1)
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        project.refresh_from_db()
+        self.assertFalse(project.webhook_open)
+        self.assertEqual(project.failed_count, 2)
+        # 熔断后事件不可重试，直接标记失败
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+    # ── 幂等：非 PENDING 跳过 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_skip_non_pending_event(self, mock_http):
+        event = self._create_event(status=WebhookEvent.Status.SUCCEEDED)
+
+        deliver_event(event.pk)
+
+        mock_http.assert_not_called()
+
+    # ── webhook 未配置 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_no_webhook_url_marks_failed(self, mock_http):
+        project = _make_project(webhook="")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIn("not configured", event.last_error)
+        mock_http.assert_not_called()
+
+    # ── webhook_open=False ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_webhook_closed_marks_failed(self, mock_http):
+        project = _make_project(webhook_open=False)
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIn("not open", event.last_error)
+        mock_http.assert_not_called()
+
+    # ── 超出重试次数 ──
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_exceeds_max_retries_marks_failed(self, mock_http):
+        PlatformSettings.objects.create(webhook_delivery_max_retries=1)
+        mock_http.return_value = (False, 500, {}, "error", "", 50)
+        event = self._create_event()
+        # 模拟已有 1 次尝试
+        DeliveryAttempt.objects.create(
+            event=event,
+            try_number=1,
+            request_headers={},
+            request_body="{}",
+            duration_ms=50,
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+
+
+class SignalTests(TestCase):
+    """测试 projects signal 中重置 webhook 事件的行为。"""
+
+    def test_reopen_webhook_resets_failed_events_with_schedule_cleared(self):
+        """通过 Project.save() 重新打开 webhook 时，FAILED 事件应重置为 PENDING 且清除 schedule_locked_until。"""
+        project = _make_project(webhook_open=False, failed_count=5)
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"type": "test"},
+            status=WebhookEvent.Status.FAILED,
+            schedule_locked_until=timezone.now() + timezone.timedelta(hours=1),
+        )
+
+        project.webhook_open = True
+        project.save()
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        self.assertIsNone(event.schedule_locked_until)
+
+        project.refresh_from_db()
+        self.assertEqual(project.failed_count, 0)

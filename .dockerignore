@@ -1,0 +1,41 @@
+.editorconfig
+.gitattributes
+.github
+.gitignore
+.gitlab-ci.yml
+.idea
+.pre-commit-config.yaml
+.readthedocs.yml
+.travis.yml
+venv
+.git
+.envs/
+logs/
+
+# Python 生成文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 类型检查 / Lint 缓存
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# 依赖缓存
+pip-wheel-metadata/
+wheels/
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

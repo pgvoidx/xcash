@@ -1,0 +1,82 @@
+{% extends "admin/base_site.html" %}
+
+{% load admin_urls i18n static unfold %}
+
+{% block extrastyle %}{{ block.super }}{% endblock %}
+
+{% block bodyclass %}{{ block.super }} {{ opts.app_label }}-{{ opts.model_name }} change-form{% endblock %}
+
+{% block content %}
+    <div id="content-main">
+        <form{% if form_url %} action="{{ form_url }}"{% endif %} method="post" id="{{ opts.model_name }}_form">
+            {% csrf_token %}
+            <input type="text" name="username" value="{{ original.get_username }}" class="hidden">
+
+            {% if is_popup %}
+                <input type="hidden" name="{{ is_popup_var }}" value="1">
+            {% endif %}
+
+            {% include "unfold/helpers/messages/errornote.html" with errors=form.errors %}
+
+            {% blocktranslate with username=original asvar message %}为用户 <strong>{{ username }}</strong> 生成新的两步验证密钥，并使用新设备上的动态验证码完成确认。{% endblocktranslate %}
+            {% include "unfold/helpers/messages/info.html" with message=message %}
+
+            <fieldset class="border border-base-200 mb-8 rounded-default p-3 shadow-xs dark:border-base-800">
+                <div class="mb-6">
+                    <p class="text-[11px] font-medium uppercase tracking-[0.22em] opacity-60">{% trans "两步验证" %}</p>
+                    <p class="mt-2 text-base font-semibold">{% trans "先把新的两步验证密钥添加到验证器" %}</p>
+                    <p class="mt-2 text-sm leading-6 opacity-80">
+                        {% if require_self_old_otp_confirmation %}
+                            {% trans "当前是自助换绑流程。你需要先验证当前密码和旧的两步验证码，再使用新设备上的验证码完成切换。" %}
+                        {% else %}
+                            {% trans "确认成功前，旧的已绑定设备仍然有效；只有完成下面的验证码确认后，系统才会切换到新密钥。" %}
+                        {% endif %}
+                    </p>
+
+                    <div class="mt-5 flex flex-col items-center gap-3 rounded-md border border-base-200 bg-base-50 py-6">
+                        <p class="text-[11px] font-medium uppercase tracking-[0.18em] opacity-60">{% trans "扫描二维码" %}</p>
+                        <div class="rounded bg-white p-3 shadow-sm">
+                            <img src="{{ otp_qr_data_url }}" alt="{% trans '两步验证绑定二维码' %}" class="h-48 w-48 block" />
+                        </div>
+                        <p class="text-xs leading-5 opacity-60 text-center max-w-xs">
+                            {% trans "使用 Google Authenticator、1Password 或其他兼容动态验证码的应用扫码即可。" %}
+                        </p>
+                    </div>
+
+                    <div class="flex items-center gap-3 my-4">
+                        <div class="flex-1 h-px bg-base-200"></div>
+                        <span class="text-[11px] font-medium uppercase tracking-[0.18em] opacity-40">{% trans "或手动录入" %}</span>
+                        <div class="flex-1 h-px bg-base-200"></div>
+                    </div>
+
+                    <div class="rounded-md border border-base-200 bg-base-50 px-4 py-4">
+                        <p class="text-[11px] font-medium uppercase tracking-[0.18em] opacity-60">{% trans "手动密钥" %}</p>
+                        <p class="mt-2 text-xs leading-5 opacity-75">
+                            {% trans '在验证器中选择"手动输入密钥"，输入下面这组 Base32 密钥。' %}
+                        </p>
+                        <p class="mt-3 rounded border border-base-200 bg-white px-3 py-3 font-mono break-all text-sm leading-6 select-all">
+                            {{ otp_secret }}
+                        </p>
+                    </div>
+                </div>
+
+                {% if require_self_password_confirmation %}
+                    {% include "unfold/helpers/field.html" with field=form.current_password %}
+                {% endif %}
+
+                {% if require_self_old_otp_confirmation %}
+                    {% include "unfold/helpers/field.html" with field=form.current_token %}
+                {% endif %}
+
+                {% include "unfold/helpers/field.html" with field=form.device_name %}
+                {% include "unfold/helpers/field.html" with field=form.token %}
+
+                <div class="border-t border-base-200 flex justify-end -mx-3 pt-3 px-3 dark:border-base-800">
+                    {% component "unfold/components/button.html" with submit=1 %}
+                        {% trans "确认并更新两步验证" %}
+                    {% endcomponent %}
+                </div>
+            </fieldset>
+        </form>
+    </div>
+{% endblock %}

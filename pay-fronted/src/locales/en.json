@@ -1,0 +1,90 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "copy": "Copy",
+    "copied": "Copied",
+    "tagline": "Secure and fast cryptocurrency payment experience"
+  },
+  "invoice": {
+    "title": "Invoice Details",
+    "orderNumber": "Order Number",
+    "systemNumber": "System Number",
+    "amountDue": "Amount Due",
+    "paymentToken": "Payment Token",
+    "blockchainNetwork": "Blockchain Network",
+    "paymentIrreversible": "Please verify the amount carefully. Payments cannot be reversed.",
+    "status": {
+      "waiting": "Waiting",
+      "confirming": "Confirming",
+      "completed": "Completed",
+      "expired": "Expired",
+      "unknown": "Unknown"
+    }
+  },
+  "payment": {
+    "selectMethod": "Select Payment Method",
+    "selectMethodDesc": "Please select the token and network you want to use",
+    "confirmAndSelectMethod": "Confirm & Select Payment Method →",
+    "confirmAndPay": "Confirm & Pay →",
+    "step": "Step",
+    "selectToken": "Select Token",
+    "selectTokenDesc": "Choose the cryptocurrency you want to pay with",
+    "selectNetwork": "Select Network",
+    "selectNetworkDesc": "Choose the blockchain network available in your wallet",
+    "gettingPaymentInfo": "Getting payment information...",
+    "paymentInfo": "Payment Information",
+    "paymentCompleted": "Payment Completed",
+    "paymentConfirming": "Payment Confirming",
+    "paymentAmount": "Payment Amount",
+    "network": "Network",
+    "paymentAddress": "Payment Address",
+    "contractAddress": "Contract Address",
+    "transactionHash": "Transaction Hash",
+    "scanQRCode": "Scan QR code with wallet",
+    "transferTo": "Please transfer",
+    "toAddress": "to the following address",
+    "reselectMethod": "Reselect Payment Method",
+    "returnToMerchant": "Return to Merchant"
+  },
+  "confirmation": {
+    "blockConfirmation": "Block Confirmation Progress",
+    "confirmed": "Confirmed",
+    "blocks": "blocks",
+    "needs": "needs",
+    "transactionConfirmed": "Transaction confirmed",
+    "waitingConfirmation": "Please wait for blockchain confirmation"
+  },
+  "waiting": {
+    "title": "Waiting for Payment",
+    "description": "Please complete the payment as soon as possible",
+    "timeRemaining": "Time Remaining",
+    "expired": "Expired",
+    "days": "days"
+  },
+  "expired": {
+    "title": "Payment Expired",
+    "orderExpired": "Order has expired",
+    "contactMerchant": "Please contact the merchant to create a new order",
+    "refreshPage": "Refresh Page"
+  },
+  "error": {
+    "title": "Something went wrong",
+    "invoiceNotFound": "Invoice not found, please check if the invoice number is correct",
+    "missingInvoiceNumber": "Missing invoice number parameter (sys_no)",
+    "fetchFailed": "Failed to fetch invoice information"
+  },
+  "selector": {
+    "noTokens": "No tokens available",
+    "selectToken": "Select payment token",
+    "networks": "networks",
+    "selectNetwork": "Select blockchain network",
+    "selectTokenFirst": "Please select a token first",
+    "noNetworks": "No networks available for this token",
+    "testNetwork": "Testnet",
+    "mainNetwork": "Mainnet"
+  }
+}

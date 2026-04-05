@@ -1,0 +1,177 @@
+volumes:
+  xcash_dev_django_db_data: {}
+  xcash_dev_redis_data: {}
+  xcash_dev_ethereum_data: {}
+  xcash_dev_bitcoin_data: {}
+  xcash_dev_signer_db_data: {}
+
+services:
+  django-db:
+    image: postgres:18.3-trixie
+    container_name: xcash_dev_django_db
+    restart: unless-stopped
+    env_file:
+      - .env.dev
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - xcash_dev_django_db_data:/var/lib/postgresql
+
+  redis:
+    image: redis:8.2.1
+    container_name: xcash_dev_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - xcash_dev_redis_data:/data
+
+  flower:
+    image: mher/flower:2.0
+    container_name: xcash_dev_flower
+    restart: unless-stopped
+    depends_on:
+       - redis
+    environment:
+      FLOWER_BROKER_URL: ${FLOWER_BROKER_URL:-redis://redis:6379/0}
+      FLOWER_PORT: 5555
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    command:
+      - celery
+      - --broker=${FLOWER_BROKER_URL:-redis://redis:6379/0}
+      - flower
+      - --port=5555
+
+  ethereum:
+    image: ghcr.io/foundry-rs/foundry:v1.3.1
+    container_name: xcash_dev_ethereum
+    # 开发环境直接以 root 运行，避免 Docker 命名卷根目录默认 755/root:root
+    # 导致镜像内 foundry 用户无法把 anvil state 写入 /data。
+    user: "0:0"
+    restart: unless-stopped
+    entrypoint: ["anvil"]
+    ports:
+      - "${LOCAL_EVM_PORT:-8545}:8545"
+    volumes:
+      - xcash_dev_ethereum_data:/data
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8545"
+      - --chain-id
+      - "${LOCAL_EVM_CHAIN_ID:-31337}"
+      # 每秒自动出块，模拟真实链的区块推进，使 FULL 确认模式和 block_number_updated 正常工作。
+      - --block-time
+      - "${LOCAL_EVM_BLOCK_TIME:-1}"
+      # 持久化链状态，重启后继续出块而非从创世块重来。
+      - --state
+      - /data/anvil-state.json
+      # 开发联调更关注异常退出后的状态连续性，定时落盘比仅在退出时保存更稳妥。
+      - --state-interval
+      - "5"
+
+  bitcoin:
+    # 本地联调优先使用仍在维护的 bitcoind 镜像，避免停留在多年未更新的旧仓库。
+    # 该镜像运行用户为 bitcoind，HOME=/data/，链数据位于 /data/.bitcoin。
+    image: lncm/bitcoind:v27.2
+    container_name: xcash_dev_bitcoin
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_BTC_RPC_PORT:-18443}:18443"
+      - "${LOCAL_BTC_ZMQ_BLOCK_PORT:-28332}:28332"
+      - "${LOCAL_BTC_ZMQ_TX_PORT:-28333}:28333"
+    volumes:
+      - xcash_dev_bitcoin_data:/data/.bitcoin
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # 后台启动 bitcoind，保留镜像默认的 ZMQ 推送参数，记录 PID 以便优雅关闭
+        bitcoind \
+          -regtest=1 -server=1 -txindex=1 \
+          -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
+          -rpcuser=${LOCAL_BTC_RPC_USER:-xcash} \
+          -rpcpassword=${LOCAL_BTC_RPC_PASSWORD:-xcash} \
+          -fallbackfee=${LOCAL_BTC_FALLBACK_FEE:-0.0002} \
+          -zmqpubrawblock=tcp://0.0.0.0:28332 \
+          -zmqpubrawtx=tcp://0.0.0.0:28333 &
+        BITCOIND_PID=$$!
+
+        # 收到 SIGTERM/SIGINT 时优雅停止 bitcoind
+        trap "kill $$BITCOIND_PID; wait $$BITCOIND_PID; exit 0" TERM INT
+
+        BTC="bitcoin-cli -regtest -rpcuser=${LOCAL_BTC_RPC_USER:-xcash} -rpcpassword=${LOCAL_BTC_RPC_PASSWORD:-xcash}"
+
+        echo "等待 bitcoind 就绪..."
+        until $$BTC getblockchaininfo > /dev/null 2>&1; do
+          # 如果 bitcoind 进程已退出，直接终止
+          kill -0 $$BITCOIND_PID 2>/dev/null || exit 1
+          sleep 1
+        done
+
+        # 创建或加载 miner 钱包（重启时钱包已存在，loadwallet 即可）
+        $$BTC createwallet "miner" > /dev/null 2>&1 || \
+        $$BTC loadwallet "miner" > /dev/null 2>&1 || true
+
+        # 固定挖矿地址，避免每次重启生成新地址导致奖励分散
+        ADDR_FILE="/data/.bitcoin/miner_address"
+        if [ -f "$$ADDR_FILE" ]; then
+          ADDR=$$(cat "$$ADDR_FILE")
+        else
+          ADDR=$$($$BTC -rpcwallet=miner getnewaddress "mining")
+          echo "$$ADDR" > "$$ADDR_FILE"
+        fi
+        echo "挖矿地址: $$ADDR"
+
+        # 每 5 秒自动出块，挖矿奖励进入 miner 钱包
+        while kill -0 $$BITCOIND_PID 2>/dev/null; do
+          $$BTC -rpcwallet=miner generatetoaddress 1 "$$ADDR" > /dev/null 2>&1
+          sleep ${LOCAL_BTC_BLOCK_INTERVAL:-5}
+        done
+
+  signer-db:
+    image: postgres:18.3-trixie
+    container_name: xcash_dev_signer_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${SIGNER_POSTGRES_DB:-xcash_signer}
+      POSTGRES_USER: ${SIGNER_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${SIGNER_POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${SIGNER_POSTGRES_PORT:-5433}:5432"
+    # signer 数据库必须独立持久化，避免与主应用数据库卷语义混淆。
+    volumes:
+      - xcash_dev_signer_db_data:/var/lib/postgresql
+
+  signer:
+    build:
+      context: .
+      dockerfile: ./signer/compose/dev/Dockerfile
+    image: xcash_dev_signer
+    container_name: xcash_dev_signer
+    restart: unless-stopped
+    depends_on:
+      - signer-db
+      - redis
+    volumes:
+      # signer 使用自己的虚拟环境卷，避免继续复用主应用 /app/.venv。
+      - /app/signer/.venv
+      # signer 开发容器只挂载 signer 项目自身代码，避免把整仓源码和宿主机 .venv 暴露进去。
+      - ./signer:/app/signer:z
+    env_file:
+      - .env.dev
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings
+      UV_PROJECT_ENVIRONMENT: /app/signer/.venv
+      # 容器内通过服务名连接，覆盖 .env.dev 中的 127.0.0.1
+      POSTGRES_HOST: signer-db
+      REDIS_HOST: redis
+      SIGNER_POSTGRES_HOST: signer-db
+      SIGNER_POSTGRES_PORT: 5432
+    # 开发环境源码目录直接 bind mount 到 /app，宿主机文件权限会覆盖镜像内 chmod 结果。
+    # 这里显式通过 bash 执行启动脚本，避免因宿主机未保留可执行位而启动失败。
+    command: bash /app/signer/compose/dev/start
+    ports:
+      - "${SIGNER_PORT:-8010}:8000"

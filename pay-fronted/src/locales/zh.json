@@ -1,0 +1,90 @@
+{
+  "common": {
+    "loading": "加载中...",
+    "error": "出错了",
+    "retry": "重试",
+    "cancel": "取消",
+    "confirm": "确认",
+    "copy": "复制",
+    "copied": "已复制",
+    "tagline": "安全、快捷的数字货币支付体验"
+  },
+  "invoice": {
+    "title": "账单详情",
+    "orderNumber": "订单号",
+    "systemNumber": "系统单号",
+    "amountDue": "应付金额",
+    "paymentToken": "支付代币",
+    "blockchainNetwork": "区块链网络",
+    "paymentIrreversible": "请仔细核对金额与订单信息，支付后无法撤销",
+    "status": {
+      "waiting": "待支付",
+      "confirming": "确认中",
+      "completed": "已完成",
+      "expired": "已超时",
+      "unknown": "未知状态"
+    }
+  },
+  "payment": {
+    "selectMethod": "选择支付方式",
+    "selectMethodDesc": "请选择您要使用的代币和网络",
+    "confirmAndSelectMethod": "确认并选择支付方式 →",
+    "confirmAndPay": "确认并支付账单 →",
+    "step": "步骤",
+    "selectToken": "选择代币",
+    "selectTokenDesc": "选择您要支付的加密货币",
+    "selectNetwork": "选择网络",
+    "selectNetworkDesc": "选择您钱包中可用的区块链网络",
+    "gettingPaymentInfo": "正在获取支付信息...",
+    "paymentInfo": "支付信息",
+    "paymentCompleted": "支付已完成",
+    "paymentConfirming": "支付确认中",
+    "paymentAmount": "支付金额",
+    "network": "网络",
+    "paymentAddress": "支付地址",
+    "contractAddress": "合约地址",
+    "transactionHash": "交易哈希",
+    "scanQRCode": "使用钱包扫码支付",
+    "transferTo": "请向以下地址转账",
+    "toAddress": "",
+    "reselectMethod": "重新选择支付方式",
+    "returnToMerchant": "返回商户"
+  },
+  "confirmation": {
+    "blockConfirmation": "区块确认进度",
+    "confirmed": "已确认",
+    "blocks": "个区块",
+    "needs": "需要",
+    "transactionConfirmed": "交易已确认完成",
+    "waitingConfirmation": "请等待区块链确认"
+  },
+  "waiting": {
+    "title": "等待支付",
+    "description": "请尽快完成支付",
+    "timeRemaining": "剩余时间",
+    "expired": "已过期",
+    "days": "天"
+  },
+  "expired": {
+    "title": "支付已超时",
+    "orderExpired": "订单已过期",
+    "contactMerchant": "请联系商家重新创建订单",
+    "refreshPage": "刷新页面"
+  },
+  "error": {
+    "title": "出错了",
+    "invoiceNotFound": "未找到账单,请检查账单号是否正确",
+    "missingInvoiceNumber": "缺少账单号参数 (sys_no)",
+    "fetchFailed": "获取账单信息失败"
+  },
+  "selector": {
+    "noTokens": "暂无可用代币",
+    "selectToken": "选择支付代币",
+    "networks": "个网络",
+    "selectNetwork": "选择区块链网络",
+    "selectTokenFirst": "请先选择代币",
+    "noNetworks": "该代币暂无可用网络",
+    "testNetwork": "测试网络",
+    "mainNetwork": "主网络"
+  }
+}

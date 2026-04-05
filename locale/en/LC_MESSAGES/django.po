@@ -1,0 +1,1488 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Xcash 1.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-11-22 17:00+0800\n"
+"PO-Revision-Date: 2025-09-27 02:10+0000\n"
+"Last-Translator: AI Translator <translate@xcash.com>\n"
+"Language-Team: English <team@xcash.com>\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: config/settings/unfold/admin.py:10 config/settings/unfold/dash.py:10
+msgid "系统"
+msgstr "System"
+
+#: config/settings/unfold/admin.py:14
+msgid "仪表板"
+msgstr "Dashboard"
+
+#: config/settings/unfold/admin.py:21
+msgid "业务"
+msgstr "Business"
+
+#: config/settings/unfold/admin.py:25 config/settings/unfold/dash.py:30
+msgid "项目管理"
+msgstr "Projects"
+
+#: config/settings/unfold/admin.py:31 config/settings/unfold/dash.py:48
+msgid "账单列表"
+msgstr "Invoices"
+
+#: config/settings/unfold/admin.py:38
+msgid "区块链"
+msgstr "Block Chain"
+
+#: config/settings/unfold/admin.py:42 xcash/chains/admin.py:109
+#: xcash/chains/models.py:83 xcash/chains/models.py:84
+#: xcash/chains/models.py:294 xcash/invoices/admin.py:557
+#: xcash/invoices/models.py:90
+msgid "链"
+msgstr "Chain"
+
+#: config/settings/unfold/admin.py:47 xcash/chains/models.py:141
+#: xcash/chains/models.py:142 xcash/chains/models.py:235
+msgid "钱包"
+msgstr "Wallet"
+
+#: config/settings/unfold/admin.py:52 xcash/chains/models.py:246
+#: xcash/chains/models.py:247
+msgid "账户"
+msgstr "Account"
+
+#: config/settings/unfold/admin.py:57 xcash/chains/models.py:336
+#: xcash/chains/models.py:337
+msgid "转账"
+msgstr "Transfer"
+
+#: config/settings/unfold/admin.py:64
+msgid "Quicknode"
+msgstr "QuickNode"
+
+#: config/settings/unfold/admin.py:68
+msgid "Stream"
+msgstr "Stream"
+
+#: config/settings/unfold/admin.py:75
+msgid "监控地址"
+msgstr "Monitored Addresses"
+
+#: config/settings/unfold/admin.py:84
+msgid "货币"
+msgstr "Currency"
+
+#: config/settings/unfold/admin.py:88 xcash/currencies/models.py:110
+#: xcash/invoices/admin.py:286 xcash/invoices/admin.py:305
+msgid "法币"
+msgstr "Fiat"
+
+#: config/settings/unfold/admin.py:93 xcash/chains/admin.py:105
+#: xcash/currencies/models.py:23 xcash/invoices/admin.py:294
+#: xcash/invoices/admin.py:305 xcash/invoices/admin.py:553
+#: xcash/invoices/models.py:83
+msgid "加密货币"
+msgstr "Crypto"
+
+#: config/settings/unfold/admin.py:100 xcash/analytics/models.py:21
+#: xcash/analytics/models.py:124 xcash/analytics/models.py:181
+#: xcash/referrals/models.py:84 xcash/referrals/models.py:119
+#: xcash/referrals/models.py:159 xcash/users/apps.py:7
+msgid "用户"
+msgstr "User"
+
+#: config/settings/unfold/admin.py:104
+msgid "Groups"
+msgstr "Groups"
+
+#: config/settings/unfold/admin.py:109
+msgid "Users"
+msgstr "Users"
+
+#: config/settings/unfold/admin.py:114 config/settings/unfold/dash.py:19
+#: xcash/users/models.py:429
+msgid "余额明细"
+msgstr "Balance History"
+
+#: config/settings/unfold/admin.py:119 xcash/users/models.py:48
+#: xcash/users/models.py:379
+msgid "版本"
+msgstr "Version"
+
+#: config/settings/unfold/admin.py:126 config/settings/unfold/admin.py:140
+#: config/settings/unfold/dash.py:75 config/settings/unfold/dash.py:89
+#: xcash/referrals/apps.py:8 xcash/referrals/models.py:107
+msgid "邀请返佣"
+msgstr "Referral Earnings"
+
+#: config/settings/unfold/admin.py:130 config/settings/unfold/dash.py:79
+#: xcash/referrals/models.py:19 xcash/referrals/models.py:40
+#: xcash/referrals/models.py:63
+msgid "邀请码"
+msgstr "Referral Code"
+
+#: config/settings/unfold/admin.py:135 config/settings/unfold/dash.py:84
+#: xcash/referrals/models.py:75
+msgid "邀请关系"
+msgstr "Relationship"
+
+#: config/settings/unfold/admin.py:147 config/settings/unfold/dash.py:96
+#: xcash/referrals/models.py:187
+msgid "返佣提币"
+msgstr "Earnings Withdrawal"
+
+#: config/settings/unfold/admin.py:154 config/settings/unfold/dash.py:103
+#: xcash/referrals/models.py:142 xcash/users/models.py:389
+msgid "受邀返现"
+msgstr "Cashback"
+
+#: config/settings/unfold/admin.py:163
+msgid "任务"
+msgstr "Tasks"
+
+#: config/settings/unfold/admin.py:167
+msgid "任务日志"
+msgstr "Task Logs"
+
+#: config/settings/unfold/admin.py:174
+msgid "Periodic tasks"
+msgstr "Periodic tasks"
+
+#: config/settings/unfold/admin.py:181
+msgid "Clocked"
+msgstr "Clocked"
+
+#: config/settings/unfold/admin.py:188
+msgid "Crontabs"
+msgstr "Crontabs"
+
+#: config/settings/unfold/admin.py:195
+msgid "Intervals"
+msgstr "Intervals"
+
+#: config/settings/unfold/admin.py:202
+msgid "Solar events"
+msgstr "Solar events"
+
+#: config/settings/unfold/admin.py:211 config/settings/unfold/admin.py:215
+#: config/settings/unfold/dash.py:55 xcash/projects/admin.py:193
+#: xcash/webhooks/apps.py:7
+msgid "通知"
+msgstr "Notifications"
+
+#: config/settings/unfold/admin.py:222 config/settings/unfold/dash.py:66
+#: xcash/webhooks/models.py:91
+msgid "投递日志"
+msgstr "Delivery Logs"
+
+#: config/settings/unfold/admin.py:231 config/settings/unfold/dash.py:112
+#: xcash/analytics/apps.py:7
+msgid "统计"
+msgstr "Statistics"
+
+#: config/settings/unfold/admin.py:236 config/settings/unfold/dash.py:117
+#: xcash/analytics/models.py:37
+msgid "月交易量"
+msgstr "Monthly Trading Volume"
+
+#: config/settings/unfold/admin.py:243 xcash/analytics/models.py:128
+#: xcash/analytics/models.py:129
+msgid "用户日统计"
+msgstr "User Daily Statistics"
+
+#: config/settings/unfold/admin.py:250 xcash/analytics/models.py:185
+#: xcash/analytics/models.py:186
+msgid "用户月统计"
+msgstr "User Monthly Statistics"
+
+#: config/settings/unfold/admin.py:257 config/settings/unfold/dash.py:138
+#: xcash/analytics/models.py:115 xcash/analytics/models.py:116
+msgid "项目日统计"
+msgstr "Project Daily Statistics"
+
+#: config/settings/unfold/admin.py:264 config/settings/unfold/dash.py:145
+#: xcash/analytics/models.py:175 xcash/analytics/models.py:176
+msgid "项目月统计"
+msgstr "Project Monthly Statistics"
+
+#: config/settings/unfold/base.py:56
+msgid "文档"
+msgstr "Documentation"
+
+#: config/settings/unfold/dash.py:14
+msgid "控制台"
+msgstr "Dashboard"
+
+#: config/settings/unfold/dash.py:26 xcash/analytics/models.py:111
+#: xcash/analytics/models.py:171 xcash/invoices/models.py:52
+#: xcash/projects/apps.py:8 xcash/projects/models.py:86
+#: xcash/projects/models.py:132 xcash/users/admin.py:85
+#: xcash/users/models.py:322 xcash/users/models.py:407
+#: xcash/webhooks/models.py:18
+msgid "项目"
+msgstr "Project"
+
+#: config/settings/unfold/dash.py:35 xcash/projects/models.py:139
+#: xcash/projects/models.py:150 xcash/projects/models.py:151
+#: xcash/referrals/models.py:168
+msgid "收币地址"
+msgstr "Receiving Address"
+
+#: config/settings/unfold/dash.py:44
+msgid "支付"
+msgstr "Payments"
+
+#: config/settings/unfold/dash.py:59
+msgid "通知事件"
+msgstr "Notification"
+
+#: config/settings/unfold/dash.py:124
+msgid "全局日统计"
+msgstr "Global Daily Statistics"
+
+#: config/settings/unfold/dash.py:131
+msgid "全局月统计"
+msgstr "Global Monthly Statistics"
+
+#: xcash/analytics/models.py:23
+msgid "月"
+msgstr "Month"
+
+#: xcash/analytics/models.py:28 xcash/core/dashboard.py:49
+#: xcash/core/dashboard.py:64 xcash/users/models.py:411
+msgid "交易量"
+msgstr "Trading Volume"
+
+#: xcash/analytics/models.py:32 xcash/analytics/models.py:87
+#: xcash/chains/models.py:80 xcash/chains/models.py:242
+#: xcash/chains/models.py:332 xcash/invoices/models.py:135
+#: xcash/projects/models.py:79 xcash/projects/models.py:141
+#: xcash/quicknode/models.py:23 xcash/referrals/models.py:31
+#: xcash/referrals/models.py:70 xcash/referrals/models.py:104
+#: xcash/referrals/models.py:139 xcash/referrals/models.py:184
+#: xcash/users/models.py:426 xcash/webhooks/models.py:44
+#: xcash/webhooks/models.py:87
+msgid "创建时间"
+msgstr "Created At"
+
+#: xcash/analytics/models.py:77 xcash/users/models.py:388
+msgid "账单支付"
+msgstr "Invoice"
+
+#: xcash/analytics/models.py:82
+msgid "共计"
+msgstr "Total"
+
+#: xcash/analytics/models.py:86 xcash/chains/models.py:319
+msgid "日期"
+msgstr "Date"
+
+#: xcash/chains/admin.py:23 xcash/invoices/admin.py:404
+#: xcash/projects/admin.py:162 xcash/projects/admin.py:174
+#: xcash/webhooks/admin.py:23 xcash/webhooks/admin.py:77
+msgid "基本信息"
+msgstr "Info"
+
+#: xcash/chains/models.py:40 xcash/currencies/models.py:15
+#: xcash/projects/models.py:128 xcash/users/models.py:361
+msgid "名称"
+msgstr "Name"
+
+#: xcash/chains/models.py:44 xcash/currencies/models.py:16
+#: xcash/currencies/models.py:107
+msgid "代码"
+msgstr "Code"
+
+#: xcash/chains/models.py:48 xcash/chains/models.py:307
+#: xcash/users/admin.py:140 xcash/users/models.py:423
+msgid "类型"
+msgstr "Type"
+
+#: xcash/chains/models.py:59
+msgid "区块确认数"
+msgstr "Block Confirmations"
+
+#: xcash/chains/models.py:62
+msgid "最新区块"
+msgstr "Latest Block"
+
+#: xcash/chains/models.py:65 xcash/projects/models.py:77
+msgid "启用"
+msgstr "Enabled"
+
+#: xcash/chains/models.py:69
+msgid "Chain ID"
+msgstr "Chain ID"
+
+#: xcash/chains/models.py:74
+msgid "RPC"
+msgstr "RPC"
+
+#: xcash/chains/models.py:75
+msgid "POA"
+msgstr "POA"
+
+#: xcash/chains/models.py:78
+msgid "Endpoint"
+msgstr "Endpoint"
+
+#: xcash/chains/models.py:130
+msgid "余额充值帐户"
+msgstr "Balance Top-up Account"
+
+#: xcash/chains/models.py:138
+msgid "助记词"
+msgstr "Mnemonic"
+
+#: xcash/chains/models.py:237
+msgid "链类型"
+msgstr "Chain Type"
+
+#: xcash/chains/models.py:238
+msgid "用途"
+msgstr "Purpose"
+
+#: xcash/chains/models.py:239
+msgid "索引"
+msgstr "Index"
+
+#: xcash/chains/models.py:240 xcash/currencies/models.py:18
+msgid "地址"
+msgstr "Address"
+
+#: xcash/chains/models.py:278
+msgid "💳 支付"
+msgstr ""
+
+#: xcash/chains/models.py:279
+#, fuzzy
+#| msgid "充值余额"
+msgid "🪙 充值余额"
+msgstr "Recharge"
+
+#: xcash/chains/models.py:283 xcash/invoices/models.py:30
+msgid "确认中"
+msgstr "Confirming"
+
+#: xcash/chains/models.py:284
+msgid "已确认"
+msgstr "Confirmed"
+
+#: xcash/chains/models.py:285
+msgid "丢弃"
+msgstr "Dropped"
+
+#: xcash/chains/models.py:289
+msgid "完全"
+msgstr "Full"
+
+#: xcash/chains/models.py:290
+msgid "快速"
+msgstr "Quick"
+
+#: xcash/chains/models.py:295
+msgid "区块"
+msgstr "Block"
+
+#: xcash/chains/models.py:296 xcash/common/fields.py:16
+#: xcash/common/fields.py:111
+msgid "哈希"
+msgstr "Hash"
+
+#: xcash/chains/models.py:299
+msgid "代币"
+msgstr "Token"
+
+#: xcash/chains/models.py:301
+msgid "发送地址"
+msgstr "From Address"
+
+#: xcash/chains/models.py:302
+msgid "目的地址"
+msgstr "To Address"
+
+#: xcash/chains/models.py:303
+msgid "数值"
+msgstr "Value"
+
+#: xcash/chains/models.py:304 xcash/users/admin.py:157
+#: xcash/users/models.py:420
+msgid "数量"
+msgstr "Amount"
+
+#: xcash/chains/models.py:316
+msgid "确认模式"
+msgstr "Confirm mode"
+
+#: xcash/chains/models.py:318
+#, fuzzy
+#| msgid "创建时间"
+msgid "时间戳"
+msgstr "Created At"
+
+#: xcash/chains/models.py:328 xcash/invoices/admin.py:515
+#: xcash/invoices/models.py:126 xcash/referrals/models.py:177
+#: xcash/webhooks/models.py:28
+msgid "状态"
+msgstr "Status"
+
+#: xcash/chains/models.py:331 xcash/quicknode/models.py:21
+msgid "处理时间"
+msgstr "Processing Time"
+
+#: xcash/common/error_codes.py:19
+msgid "参数错误"
+msgstr "Parameter error"
+
+#: xcash/common/error_codes.py:21
+msgid "AppID无效"
+msgstr "Invalid AppID"
+
+#: xcash/common/error_codes.py:22
+msgid "IP禁止"
+msgstr "IP blocked"
+
+#: xcash/common/error_codes.py:23
+msgid "签名错误"
+msgstr "Invalid signature"
+
+#: xcash/common/error_codes.py:24
+msgid "项目未配置"
+msgstr "Project not configured"
+
+#: xcash/common/error_codes.py:25
+msgid "无访问权限"
+msgstr "Access denied"
+
+#: xcash/common/error_codes.py:26
+msgid "手续费不足"
+msgstr "Insufficient fee"
+
+#: xcash/common/error_codes.py:27
+msgid "单号 out_no 重复"
+msgstr "Duplicate out_no"
+
+#: xcash/common/error_codes.py:28
+msgid "Timestamp请求头未设置或过期"
+msgstr "Timestamp header invalid"
+
+#: xcash/common/error_codes.py:29
+msgid "请求重复"
+msgstr "Repeat"
+
+#: xcash/common/error_codes.py:32
+msgid "无效链"
+msgstr "Invalid chain"
+
+#: xcash/common/error_codes.py:33
+msgid "无效代币"
+msgstr "Invalid token"
+
+#: xcash/common/error_codes.py:34
+msgid "本链不支持此代币"
+msgstr "This token is not supported on this chain"
+
+#: xcash/common/error_codes.py:35
+msgid "非校验和的地址格式"
+msgstr "Non-checksummed address format"
+
+#: xcash/common/error_codes.py:36
+msgid "合约地址"
+msgstr "Contract address"
+
+#: xcash/common/error_codes.py:37
+msgid "链、代币设置错误"
+msgstr "Chain or token misconfigured"
+
+#: xcash/common/error_codes.py:40
+msgid "账单类型错误"
+msgstr "Incorrect invoice type"
+
+#: xcash/common/error_codes.py:41
+msgid "差额账单数值错误"
+msgstr "Invalid spread invoice amount"
+
+#: xcash/common/error_codes.py:42
+msgid "支付时间错误"
+msgstr "Incorrect payment time"
+
+#: xcash/common/error_codes.py:43
+msgid "差额不足"
+msgstr "Insufficient spread amount"
+
+#: xcash/common/error_codes.py:44
+msgid "无效参数：sys_no"
+msgstr "Invalid parameter: sys_no"
+
+#: xcash/common/error_codes.py:45
+msgid "账单状态错误"
+msgstr "Incorrect invoice status"
+
+#: xcash/common/error_codes.py:46
+msgid "不允许的链与代币"
+msgstr "Disallowed chain and token combination"
+
+#: xcash/common/error_codes.py:48
+msgid "无可用支付方式。请确保已设置收币地址且methods可用。"
+msgstr "No valid recipient address."
+
+#: xcash/common/error_codes.py:50
+msgid "待支付账单过多，请勿滥用"
+msgstr "Too many pending invoices, please do not abuse"
+
+#: xcash/common/error_codes.py:51
+msgid "无效的支付方式"
+msgstr "Unsupported payment methods"
+
+#: xcash/common/error_codes.py:52
+msgid "账单不存在"
+msgstr "No such invoice"
+
+#: xcash/common/fields.py:135
+msgid "系统单号"
+msgstr "System order number"
+
+#: xcash/currencies/models.py:16
+msgid "例如:ETH、USDT"
+msgstr "Example: ETH, USDT"
+
+#: xcash/currencies/models.py:17
+msgid "精度"
+msgstr "Decimals"
+
+#: xcash/currencies/models.py:19 xcash/users/models.py:363
+msgid "价格"
+msgstr "Price"
+
+#: xcash/invoices/admin.py:79
+msgid "必填"
+msgstr "Required"
+
+#: xcash/invoices/admin.py:86
+msgid "可选"
+msgstr "Optional"
+
+#: xcash/invoices/admin.py:98
+msgid "有效期（分钟）"
+msgstr "Expiration Time (minutes)"
+
+#: xcash/invoices/admin.py:99
+msgid "留空时使用默认有效期，当前默认值为 10 分钟。"
+msgstr "Leave blank to use the default expiration time (currently 10 minutes)."
+
+#: xcash/invoices/admin.py:194
+msgid "若选择法币，支付时将按实时汇率自动换算为应付加密货币的数量。"
+msgstr ""
+"If a fiat currency is selected, the payable crypto amount will be "
+"automatically calculated based on the real-time exchange rate."
+
+#: xcash/invoices/admin.py:205
+msgid "留空时系统会自动生成商户单号。"
+msgstr "Leave blank to let the system automatically generate a out_no."
+
+#: xcash/invoices/admin.py:319
+msgid "该商户单号已存在，请重新填写。"
+msgstr "This out_no already exists. Please enter a new one."
+
+#: xcash/invoices/admin.py:325
+msgid "请输入货币代码"
+msgstr "Please enter a currency code."
+
+#: xcash/invoices/admin.py:327
+msgid "当前货币暂不支持"
+msgstr "The selected currency is currently not supported."
+
+#: xcash/invoices/admin.py:340
+msgid "当前项目暂无可用支付方式。请确保已设置收币地址。"
+msgstr ""
+"No available payment methods for the current project. Please ensure that a "
+"receiving address has been configured."
+
+#: xcash/invoices/admin.py:344
+msgid "余额不足。"
+msgstr "Insufficient balance"
+
+#: xcash/invoices/admin.py:349
+msgid "该代币暂无可用链"
+msgstr "No valid chain of this crypto"
+
+#: xcash/invoices/admin.py:363
+#, python-format
+msgid "有效期需在 %(min)s 至 %(max)s 分钟之间"
+msgstr "Expiration must be between %(min)s and %(max)s minutes."
+
+#: xcash/invoices/admin.py:425
+msgid "支付信息"
+msgstr "Payment"
+
+#: xcash/invoices/admin.py:436
+msgid "交易收据"
+msgstr "Recipient"
+
+#: xcash/invoices/admin.py:512
+msgid "生成商户单号失败，请稍后再试"
+msgstr "Failed, please retry"
+
+#: xcash/invoices/admin.py:532 xcash/invoices/models.py:63
+msgid "金额"
+msgstr "Amount"
+
+#: xcash/invoices/admin.py:538
+msgid "加密货币数量"
+msgstr "Crypto amount"
+
+#: xcash/invoices/admin.py:545 xcash/invoices/models.py:132
+msgid "创建方式"
+msgstr "Generated by"
+
+#: xcash/invoices/admin.py:549
+msgid "支付链接"
+msgstr "Pay url"
+
+#: xcash/invoices/apps.py:8 xcash/invoices/models.py:141
+#: xcash/invoices/models.py:142
+msgid "账单"
+msgstr "Invoice"
+
+#: xcash/invoices/models.py:28
+msgid "待支付"
+msgstr "Pending payment"
+
+#: xcash/invoices/models.py:32 xcash/referrals/models.py:151
+msgid "已完成"
+msgstr "Completed"
+
+#: xcash/invoices/models.py:34
+msgid "已超时"
+msgstr "Timed out"
+
+#: xcash/invoices/models.py:39
+msgid "后台"
+msgstr "Dashboard"
+
+#: xcash/invoices/models.py:57
+msgid "商户单号"
+msgstr "Merchant order number"
+
+#: xcash/invoices/models.py:60
+msgid "标题"
+msgstr "Title"
+
+#: xcash/invoices/models.py:61
+msgid "计价货币"
+msgstr "Pricing Currency"
+
+#: xcash/invoices/models.py:69
+msgid "支持的支付方式"
+msgstr "Supported payment methods"
+
+#: xcash/invoices/models.py:72 xcash/users/forms.py:42 xcash/users/forms.py:81
+#: xcash/users/forms.py:107 xcash/users/forms.py:123
+msgid "邮箱"
+msgstr "Email"
+
+#: xcash/invoices/models.py:75
+msgid "如果设置邮箱，在Invoice创建后会自动发送支付链接到此邮箱地址。"
+msgstr ""
+"If an email address is set, the payment link will be automatically sent to "
+"this address after the invoice is created."
+
+#: xcash/invoices/models.py:93
+msgid "支付加密货币数量"
+msgstr "Crypto amount"
+
+#: xcash/invoices/models.py:98
+msgid "支付加密货币数量可能在原始数量上差额浮动"
+msgstr "The crypto amount may differ from the original quantity"
+
+#: xcash/invoices/models.py:101
+msgid "支付地址"
+msgstr "Payment address"
+
+#: xcash/invoices/models.py:107
+msgid "支付开始时间"
+msgstr "Pay after"
+
+#: xcash/invoices/models.py:108
+msgid "支付截止时间"
+msgstr "Payment deadline"
+
+#: xcash/invoices/models.py:109
+msgid "支付成功后重定向地址"
+msgstr "Redirect URL after successful payment"
+
+#: xcash/invoices/models.py:111
+msgid "价值(USD)"
+msgstr "Value (USD)"
+
+#: xcash/invoices/models.py:119
+msgid "链上转账"
+msgstr "On-chain transfer"
+
+#: xcash/invoices/models.py:136
+msgid "更新时间"
+msgstr "Updated at"
+
+#: xcash/projects/admin.py:43
+msgid "IP 白名单格式错误."
+msgstr "Invalid IP allowlist format."
+
+#: xcash/projects/admin.py:53
+msgid "达到当前计划创建项目数量的上限"
+msgstr "Reached the project quota for the current plan"
+
+#: xcash/projects/admin.py:87
+msgid "显示或隐藏密钥"
+msgstr "View"
+
+#: xcash/projects/admin.py:184
+msgid "安全"
+msgstr "Safe"
+
+#: xcash/projects/admin.py:229
+msgid "地址格式错误"
+msgstr "Incorrect address format"
+
+#: xcash/projects/admin.py:236
+msgid "地址已被其他项目占用"
+msgstr "Address already used by another project"
+
+#: xcash/projects/admin.py:239
+msgid "达到当前计划创建收币地址数量的上限"
+msgstr "Reached the receiving address quota for the current plan"
+
+#: xcash/projects/admin.py:245
+msgid "不能设置为系统内账户"
+msgstr "Cannot use a system account"
+
+#: xcash/projects/models.py:21
+msgid "管理人"
+msgstr "Manager"
+
+#: xcash/projects/models.py:24
+msgid "Appid"
+msgstr "App ID"
+
+#: xcash/projects/models.py:33
+msgid "项目名称"
+msgstr "Project name"
+
+#: xcash/projects/models.py:34
+msgid "对外作为商户名展示"
+msgstr "Displayed externally as the merchant name"
+
+#: xcash/projects/models.py:38
+msgid "IP白名单"
+msgstr "IP allowlist"
+
+#: xcash/projects/models.py:41
+msgid "只有符合白名单的 IP 才可以与本网关交互，支持 IP 地址或 IP 网段"
+msgstr ""
+"Only IPs on the whitelist can interact with this gateway. Supports both IP "
+"addresses and IP ranges."
+
+#: xcash/projects/models.py:44
+msgid "可同时设置多个，中间用英文逗号 ',' 分割"
+msgstr "Multiple entries can be set, separated by commas ','"
+
+#: xcash/projects/models.py:46
+msgid "* 代表允许所有 IP 访问"
+msgstr "* means allowing access from all IP addresses"
+
+#: xcash/projects/models.py:51
+msgid "通知地址"
+msgstr "Notification URL"
+
+#: xcash/projects/models.py:52
+msgid "用于本网关发送通知到项目后端"
+msgstr "Used by this gateway to send notifications to your project backend"
+
+#: xcash/projects/models.py:55
+msgid "通知状态"
+msgstr "Event status"
+
+#: xcash/projects/models.py:58
+msgid "连续失败次数"
+msgstr "Failed count"
+
+#: xcash/projects/models.py:61
+msgid "开启预通知"
+msgstr "Enable pre-notification"
+
+#: xcash/projects/models.py:69
+msgid "快速确认阈值（USD）"
+msgstr "Quick Confirmation Threshold (USD)"
+
+#: xcash/projects/models.py:70
+msgid "低于该金额的账单无需等待，立即确认"
+msgstr ""
+"Invoices below this amount will be confirmed instantly without waiting."
+
+#: xcash/projects/models.py:73
+msgid "HMAC密钥"
+msgstr "HMAC key"
+
+#: xcash/projects/models.py:102
+msgid "项目IP白名单未设置"
+msgstr "Project IP allowlist not configured"
+
+#: xcash/projects/models.py:104
+msgid "项目通知地址未设置"
+msgstr "Project notification URL not configured"
+
+#: xcash/projects/models.py:106
+msgid "项目未启用"
+msgstr "Project disabled"
+
+#: xcash/projects/models.py:108
+msgid "本项目未设置收币地址"
+msgstr "No receiving address configured for this project"
+
+#: xcash/projects/models.py:109
+msgid "完成"
+msgstr "Completed"
+
+#: xcash/projects/models.py:135
+msgid "地址格式"
+msgstr "Address type"
+
+#: xcash/referrals/admin.py:72
+msgid "每个用户最多只能创建 20 个邀请码"
+msgstr "Each user can create up to 20 referral codes."
+
+#: xcash/referrals/admin.py:76
+msgid "邀请链接"
+msgstr "Invitation Link"
+
+#: xcash/referrals/admin.py:80
+msgid "已邀人数"
+msgstr "Number of Invitees"
+
+#: xcash/referrals/admin.py:84 xcash/referrals/models.py:25
+msgid "返现比例"
+msgstr "Cashback Rate"
+
+#: xcash/referrals/admin.py:126
+msgid "受邀者"
+msgstr "Invitee"
+
+#: xcash/referrals/admin.py:141 xcash/referrals/models.py:52
+#: xcash/users/models.py:60
+msgid "邀请人"
+msgstr "Invitor"
+
+#: xcash/referrals/admin.py:165
+#, python-format
+msgid "返佣余额必须大于等于 $100 才能提币。当前余额：$%(balance)s"
+msgstr ""
+"The referral balance must be at least $100 to withdraw. Current balance: $"
+"%(balance)s"
+
+#: xcash/referrals/models.py:27
+msgid ""
+"返现给受邀用户的比例；0–20（整数，单位：%）<br>假设邀请人邀请返佣比例为20%并"
+"设置此返现比例为5%，则最终邀请人实得15%，受邀请者实得5%"
+msgstr ""
+"Cashback percentage for invitees; 0-20 (integer, %).<br>If the inviter's "
+"referral rate is 20% and this cashback rate is 5%, the inviter ultimately "
+"receives 15% and the invitee receives 5%."
+
+#: xcash/referrals/models.py:58
+msgid "被邀请人"
+msgstr "Invitee"
+
+#: xcash/referrals/models.py:66
+msgid "邀请级别"
+msgstr "Invitation level"
+
+#: xcash/referrals/models.py:87
+msgid "返佣金额（USD）"
+msgstr "Referral Balance (USD)"
+
+#: xcash/referrals/models.py:96
+msgid "来源用户(受邀人)"
+msgstr "Invitee"
+
+#: xcash/referrals/models.py:98 xcash/referrals/models.py:133
+#: xcash/users/models.py:409 xcash/users/models.py:440
+msgid "业务单号"
+msgstr "Business no"
+
+#: xcash/referrals/models.py:101 xcash/referrals/models.py:136
+msgid "邀请人返佣比例"
+msgstr "Referral rate"
+
+#: xcash/referrals/models.py:102 xcash/referrals/models.py:137
+msgid "受邀人返现比例"
+msgstr "Cashback rate"
+
+#: xcash/referrals/models.py:122
+msgid "返现金额（USD）"
+msgstr "Total cashback (USD)"
+
+#: xcash/referrals/models.py:131
+msgid "来源用户(邀请人)"
+msgstr "Inviter"
+
+#: xcash/referrals/models.py:150
+msgid "审核中"
+msgstr "Under review"
+
+#: xcash/referrals/models.py:165
+msgid "提币金额（USD）"
+msgstr "Withdrawal amount (USD)"
+
+#: xcash/referrals/models.py:170
+msgid ""
+"请确保返佣余额大于100<br>只支持以太坊地址，实际发放Ethereum-USDT<br>无需填写"
+"数量，默认提出全部邀请返佣"
+msgstr ""
+"Ensure the referral balance exceeds 100.<br>Only Ethereum addresses are "
+"supported; payouts are made in Ethereum-USDT.<br>No amount is required; the "
+"entire referral will be withdrawn by default."
+
+#: xcash/referrals/models.py:179
+msgid "交易哈希"
+msgstr "Hash"
+
+#: xcash/referrals/models.py:182
+msgid "完成时间"
+msgstr "Completed at"
+
+#: xcash/templates/admin/index.html:7
+msgid "控制台 | Xcash"
+msgstr "Dashboard | Xcash"
+
+#: xcash/templates/admin/index.html:25
+msgid "账户总览"
+msgstr "Account Profile"
+
+#: xcash/templates/admin/index.html:31
+msgid "账户余额"
+msgstr "Balance"
+
+#: xcash/templates/admin/index.html:38
+msgid "本月剩余免费额度"
+msgstr "Free volume remaining this mouth"
+
+#: xcash/templates/admin/index.html:46
+msgid "余额直充 (Ethereum-USDT)"
+msgstr "Balance Recharge (Ethereum-USDT)"
+
+#: xcash/templates/admin/index.html:61
+msgid "返佣比例"
+msgstr "Referral rate"
+
+#: xcash/templates/admin/index.html:64
+#, python-format
+msgid ""
+"邀请用户注册后，您可获得一定比例的其手续费金额作为返佣奖励。返佣比例根据所有"
+"一级邀请用户7日平均日流水，每日自动调整：日均≥$10,000 为40%%，否则为20%%"
+msgstr ""
+"After inviting users to register, you earn a percentage of their fee amount "
+"as a referral reward. The referral rate adjusts daily based on the 7-day "
+"average daily volume of all level-one invitees: a daily average >=$10,000 "
+"yields 40%%; otherwise 20%%."
+
+#: xcash/templates/admin/index.html:72
+msgid "返佣余额"
+msgstr "Referral balance"
+
+#: xcash/templates/admin/index.html:84
+msgid "累计返现"
+msgstr "Total cashback"
+
+#: xcash/templates/admin/index.html:93
+msgid "cXCA 积分"
+msgstr "cXCA Points"
+
+#: xcash/templates/admin/index.html:96
+msgid "每次业务成交，都会铸造与本次业务USD价值等量的cXCA积分。"
+msgstr ""
+"For each completed transaction, cXCA points equivalent to the USD value of "
+"the transaction will be minted."
+
+#: xcash/templates/admin/index.html:111
+msgid "今日总计"
+msgstr "Today's total"
+
+#: xcash/templates/admin/index.html:122
+msgid "本月总计"
+msgstr "Month's total"
+
+#: xcash/templates/admin/index.html:135
+msgid "数据统计"
+msgstr "Data statistics"
+
+#: xcash/templates/auth/email_verification.html:14
+msgid "您已登出"
+msgstr "You have signed out"
+
+#: xcash/templates/auth/email_verification.html:18
+msgid "Thanks for spending some quality time with the web site today."
+msgstr "Thanks for spending some quality time with the web site today."
+
+#: xcash/templates/auth/email_verification.html:23
+msgid "再次登录"
+msgstr "Sign in again"
+
+#: xcash/templates/auth/forgot_password.html:15
+#: xcash/templates/auth/login.html:15
+#: xcash/templates/auth/password_reset.html:15
+#: xcash/templates/auth/send_verification_email.html:15
+msgid "Django site admin"
+msgstr "Django site admin"
+
+#: xcash/templates/auth/forgot_password.html:15 xcash/users/views.py:113
+msgid "忘记密码"
+msgstr "Forgot password"
+
+#: xcash/templates/auth/forgot_password.html:36
+msgid "发送重置密码邮件"
+msgstr "Send password reset email"
+
+#: xcash/templates/auth/login.html:15
+msgid "欢迎"
+msgstr "Welcome"
+
+#: xcash/templates/auth/login.html:38 xcash/users/views.py:62
+msgid "登录"
+msgstr "Log in"
+
+#: xcash/templates/auth/login.html:44
+msgid "忘记密码?"
+msgstr "Forgot password?"
+
+#: xcash/templates/auth/login.html:49
+msgid "去注册"
+msgstr "Sign up instead"
+
+#: xcash/templates/auth/password_reset.html:15
+#: xcash/templates/auth/password_reset.html:37 xcash/users/views.py:149
+msgid "重置密码"
+msgstr "Reset password"
+
+#: xcash/templates/auth/send_verification_email.html:15
+msgid "验证邮箱"
+msgstr "Verify email"
+
+#: xcash/templates/auth/send_verification_email.html:36
+msgid "发送邮箱验证邮件"
+msgstr "Send verification email"
+
+#: xcash/templates/auth/send_verification_email.html:41
+msgid "已验证?去登录"
+msgstr "Already verified? Sign in"
+
+#: xcash/templates/auth/signup.html:15
+msgid "Xcash"
+msgstr "Xcash"
+
+#: xcash/templates/auth/signup.html:15 xcash/templates/auth/signup.html:38
+#: xcash/users/views.py:89
+msgid "注册"
+msgstr "Register"
+
+#: xcash/templates/auth/signup.html:44
+msgid "已注册?去登录"
+msgstr "Already registered? Sign in"
+
+#: xcash/users/admin.py:42
+msgid "权限"
+msgstr "Permissions"
+
+#: xcash/users/admin.py:53
+msgid "重要日期"
+msgstr "Important dates"
+
+#: xcash/users/admin.py:116
+msgid "核心信息"
+msgstr "Core Information"
+
+#: xcash/users/admin.py:127
+msgid "补充信息"
+msgstr "Additional Information"
+
+#: xcash/users/forms.py:32 xcash/users/models.py:35
+msgid "此邮箱已被使用."
+msgstr "This email is already in use."
+
+#: xcash/users/forms.py:43 xcash/users/forms.py:89 xcash/users/forms.py:110
+#: xcash/users/forms.py:126
+msgid "人机验证"
+msgstr "Human verification"
+
+#: xcash/users/forms.py:52
+msgid "此邮箱已被使用。"
+msgstr "This email is already in use."
+
+#: xcash/users/forms.py:54
+msgid "不支持此邮箱后缀。"
+msgstr "Do not support this email."
+
+#: xcash/users/forms.py:86
+msgid "密码"
+msgstr "Password"
+
+#: xcash/users/forms.py:97
+msgid "此账户已被禁用，如有疑问请联系管理员。"
+msgstr ""
+"This account has been disabled. Please contact the administrator if you have "
+"any questions."
+
+#: xcash/users/models.py:32
+msgid "email address"
+msgstr "Email address"
+
+#: xcash/users/models.py:51
+msgid "余额（USD）"
+msgstr "Balance (USD)"
+
+#: xcash/users/models.py:56
+msgid "邮箱验证"
+msgstr "Email verification"
+
+#: xcash/users/models.py:67
+msgid "邀请返佣比例"
+msgstr "Referral rate"
+
+#: xcash/users/models.py:70
+msgid "返佣"
+msgstr "Referral"
+
+#: xcash/users/models.py:76
+msgid "返现"
+msgstr "Cashback"
+
+#: xcash/users/models.py:82
+msgid "cXCA积分"
+msgstr "cXCA"
+
+#: xcash/users/models.py:87
+msgid "合伙人"
+msgstr "Partner"
+
+#: xcash/users/models.py:326
+msgid "客户UID"
+msgstr "Customer UID"
+
+#: xcash/users/models.py:340
+msgid "客户"
+msgstr "Customer"
+
+#: xcash/users/models.py:369
+msgid "项目配额"
+msgstr "Project quota"
+
+#: xcash/users/models.py:373
+msgid "收币地址配额"
+msgstr "Receiving address quota"
+
+#: xcash/users/models.py:387
+msgid "充值余额"
+msgstr "Recharge"
+
+#: xcash/users/models.py:390
+msgid "系统赠送"
+msgstr "System Reward"
+
+#: xcash/users/models.py:419
+msgid "阶梯费用路径"
+msgstr "Tiered fee path"
+
+#: xcash/users/models.py:421
+msgid "新余额"
+msgstr "New balance"
+
+#: xcash/users/models.py:443
+msgid "积分明细"
+msgstr "Points records"
+
+#: xcash/users/views.py:51
+msgid "邮箱未验证。请完成邮箱验证: "
+msgstr "Email not verified. Please complete the email verification: "
+
+#: xcash/users/views.py:57 xcash/users/views.py:108
+msgid "邮箱或密码错误。"
+msgstr "Incorrect email or password."
+
+#: xcash/users/views.py:78
+msgid "🎉注册成功！请前往邮箱验证账户。"
+msgstr "🎉Registration successful! Please verify your account via email."
+
+#: xcash/users/views.py:84
+msgid "注册失败，请检查输入信息。"
+msgstr "Registration failed, please check the information."
+
+#: xcash/users/views.py:105
+msgid "已发送重置密码邮件。"
+msgstr "Password reset email sent."
+
+#: xcash/users/views.py:141
+msgid "🎉密码重置成功，请使用新密码登录。"
+msgstr "🎉Password reset successful. Please sign in with the new password."
+
+#: xcash/users/views.py:144
+msgid "链接无效或已过期，请重新请求密码重置。"
+msgstr ""
+"The link is invalid or has expired. Please request another password reset."
+
+#: xcash/users/views.py:166
+msgid "🎉已发送邮箱验证邮件。"
+msgstr "🎉Verification email sent."
+
+#: xcash/users/views.py:169
+msgid "邮箱错误。"
+msgstr "Invalid email address."
+
+#: xcash/users/views.py:174
+msgid "发送验证邮件"
+msgstr "Send verification email"
+
+#: xcash/users/views.py:199
+msgid "🎉恭喜！您的邮箱已成功验证。"
+msgstr "🎉Congratulations! Your email has been successfully verified."
+
+#: xcash/users/views.py:204
+msgid "邮箱验证链接无效或已过期，请前往重新验证: "
+msgstr ""
+"The email verification link is invalid or has expired. Please verify again: "
+
+#: xcash/users/views.py:208
+msgid "邮箱验证链接无效。"
+msgstr "This email verification link is invalid"
+
+#: xcash/webhooks/admin.py:36
+msgid "重试信息"
+msgstr "Retry info"
+
+#: xcash/webhooks/admin.py:52
+msgid "重新投递"
+msgstr "Retry"
+
+#: xcash/webhooks/admin.py:61
+msgid "已进入待投递队列"
+msgstr "Pending"
+
+#: xcash/webhooks/models.py:11
+msgid "待投递"
+msgstr "Pending delivery"
+
+#: xcash/webhooks/models.py:12
+msgid "已送达"
+msgstr "Delivered"
+
+#: xcash/webhooks/models.py:13
+msgid "投递失败"
+msgstr "Delivery failed"
+
+#: xcash/webhooks/models.py:22
+msgid "唯一。由于存在多次重试机制，此nonce用于幂等去重。"
+msgstr ""
+"Unique. This nonce is used for idempotency and deduplication due to "
+"potential multiple retries."
+
+#: xcash/webhooks/models.py:25
+msgid "内容"
+msgstr "Content"
+
+#: xcash/webhooks/models.py:33
+msgid "下次投递"
+msgstr "Next attempt"
+
+#: xcash/webhooks/models.py:36
+msgid "投递报错信息"
+msgstr "Error"
+
+#: xcash/webhooks/models.py:39
+msgid "送达时间"
+msgstr "Delivered at"
+
+#: xcash/webhooks/models.py:48 xcash/webhooks/models.py:69
+msgid "事件"
+msgstr "Notification Events"
+
+#: xcash/webhooks/models.py:71
+msgid "次数"
+msgstr "Try number"
+
+#: xcash/webhooks/models.py:81
+msgid "耗时(ms)"
+msgstr "Duration(ms)"
+
+#: xcash/webhooks/models.py:84
+msgid "成功"
+msgstr "Success"
+
+#: xcash/webhooks/models.py:85
+msgid "错误"
+msgstr "Parameter error"
+
+#~ msgid "公链"
+#~ msgstr "Chain"
+
+#, fuzzy
+#~| msgid "支持的支付方式"
+#~ msgid "支付方式"
+#~ msgstr "Supported payment methods"
+
+#, fuzzy
+#~| msgid "总额（USD）"
+#~ msgid "流水（USD）"
+#~ msgstr "Total (USD)"
+
+#, fuzzy
+#~| msgid "手续费不足"
+#~ msgid "手续费"
+#~ msgstr "Insufficient fee"
+
+#~ msgid "此链不支持合约账单"
+#~ msgstr "Contract invoices are not supported on this chain"
+
+#~ msgid "未设置此链收币地址"
+#~ msgstr "No receiving address configured for this chain"
+
+#~ msgid "货币金额"
+#~ msgstr "Currency amount"
+
+#~ msgid "USD"
+#~ msgstr "USD"
+
+#~ msgid "余额"
+#~ msgstr "Balance"
+
+#~ msgid "余额直充地址"
+#~ msgstr "Balance top-up address"
+
+#~ msgid "最新交易"
+#~ msgstr "Latest transactions"
+
+#~ msgid "旧余额"
+#~ msgstr "Previous balance"
+
+#~ msgid "过期"
+#~ msgstr "Expired"
+
+#~ msgid "通知熔断"
+#~ msgstr "Notification circuit breaker"
+
+#~ msgid "熔断"
+#~ msgstr "Circuit breaker"
+
+#~ msgid "回调端点"
+#~ msgstr "Callback endpoint"
+
+#~ msgid "充币记录"
+#~ msgstr "Deposit Records"
+
+#~ msgid "充币地址"
+#~ msgstr "Deposit Address"
+
+#~ msgid "提币记录"
+#~ msgstr "Withdrawal Records"
+
+#~ msgid "金库注资"
+#~ msgstr "Treasury Funding"
+
+#~ msgid "以太任务"
+#~ msgstr "Ethereum Tasks"
+
+#~ msgid "客户列表"
+#~ msgstr "Customer List"
+
+#~ msgid "充币"
+#~ msgstr "Deposits"
+
+#~ msgid "提币"
+#~ msgstr "Withdrawals"
+
+#~ msgid "月度用量"
+#~ msgstr "Monthly used"
+
+#~ msgid "日统计"
+#~ msgstr "Daily Statistics"
+
+#~ msgid "月统计"
+#~ msgstr "Monthly Statistics"
+
+#~ msgid "客户充币"
+#~ msgstr "Customer Deposit"
+
+#~ msgid "客户提币"
+#~ msgstr "Customer Withdrawal"
+
+#~ msgid "充币帐户"
+#~ msgstr "Deposit Account"
+
+#~ msgid "金库账户"
+#~ msgstr "Treasury Account"
+
+#~ msgid "地址不合法"
+#~ msgstr "Invalid address"
+
+#~ msgid "无效UID"
+#~ msgstr "Invalid UID"
+
+#~ msgid "网络"
+#~ msgstr "Network"
+
+#~ msgid "Nonce"
+#~ msgstr "Nonce"
+
+#~ msgid "To"
+#~ msgstr "To"
+
+#~ msgid "Value"
+#~ msgstr "Value"
+
+#~ msgid "Data"
+#~ msgstr "Data"
+
+#~ msgid "Gas"
+#~ msgstr "Gas"
+
+#~ msgid "Gas Price"
+#~ msgstr "Gas Price"
+
+#~ msgid "上次尝试时间"
+#~ msgstr "Last attempt time"
+
+#~ msgid "执行队列"
+#~ msgstr "Execution queue"
+
+#~ msgid "用于账单收款"
+#~ msgstr "Used for invoice collection"
+
+#~ msgid "用于归集充币"
+#~ msgstr "Used for deposit consolidation"
+
+#~ msgid "已处理?"
+#~ msgstr "Processed?"
+
+#~ msgid "Amount"
+#~ msgstr "Amount"
+
+#~ msgid "代币发送"
+#~ msgstr "Token transfer"
+
+#~ msgid "支持充币"
+#~ msgstr "Supports deposits"
+
+#~ msgid "支持提币"
+#~ msgstr "Supports withdrawals"
+
+#~ msgid "提币资金"
+#~ msgstr "Withdrawal funds"
+
+#~ msgid "待执行"
+#~ msgstr "Pending execution"
+
+#~ msgid "已拒绝"
+#~ msgstr "Rejected"

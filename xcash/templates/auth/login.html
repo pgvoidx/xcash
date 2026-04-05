@@ -1,0 +1,46 @@
+{% extends 'unfold/layouts/unauthenticated.html' %}
+
+{% load i18n static unfold %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    {{ form.media }}
+{% endblock %}
+
+{% block title %}
+    {{ title }} | {{ site_title }}
+{% endblock %}
+
+{% block content %}
+    {% include "unfold/helpers/unauthenticated_title.html" with title=site_title|default:_('Django site admin') subtitle=_('欢迎') %}
+
+    {% include "unfold/helpers/messages.html" %}
+
+    {% if form.errors or form.non_field_errors %}
+        <div class="flex flex-col gap-4 mb-8 *:mb-0">
+            {% include "unfold/helpers/messages/errornote.html" with errors=form.errors %}
+
+            {% include "unfold/helpers/messages/error.html" with errors=form.non_field_errors %}
+        </div>
+    {% endif %}
+
+    {% block login_before %}{% endblock %}
+
+    <form action="{{ app_path }}" method="post" id="login-form">
+        {% csrf_token %}
+        {# OTP 登录链路依赖 next 参数贯穿密码登录和动态验证码验证两个阶段。 #}
+        <input type="hidden" name="next" value="{{ next }}">
+
+        {% include "unfold/helpers/field.html" with field=form.username %}
+        {% include "unfold/helpers/field.html" with field=form.password %}
+
+        <div class="flex flex-col gap-3 mt-6">
+            {% component "unfold/components/button.html" with submit=1 variant="primary" class="submit-row w-full" %}
+                {% translate '登录' %}
+                <span class="material-symbols-outlined relative right-0 transition-all group-hover:-right-1 text-sm">arrow_forward</span>
+            {% endcomponent %}
+        </div>
+    </form>
+
+    {% block login_after %}{% endblock %}
+{% endblock %}

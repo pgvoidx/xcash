@@ -1,0 +1,46 @@
+{% load i18n unfold %}
+
+<div
+    class="fixed inset-0 z-50"
+    style="background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(6px);"
+>
+    <div
+        class="flex items-center justify-center px-4 py-8"
+        style="min-height: 100vh;"
+    >
+        <div style="width: min(100%, 28rem);">
+            {% component "unfold/components/card.html" with class="shadow-2xl" %}
+                <div class="mb-5">
+                    {% component "unfold/components/title.html" with class="text-2xl mb-2" %}
+                        {{ otp_modal_locked_title }}
+                    {% endcomponent %}
+                    {% component "unfold/components/text.html" with class="text-sm text-gray-500" %}
+                        {{ otp_modal_locked_text }}
+                    {% endcomponent %}
+                </div>
+
+                {% if otp_verify_form.errors or otp_verify_form.non_field_errors %}
+                    <div class="flex flex-col gap-4 mb-5 *:mb-0">
+                        {% include "unfold/helpers/messages/errornote.html" with errors=otp_verify_form.errors %}
+                        {% include "unfold/helpers/messages/error.html" with errors=otp_verify_form.non_field_errors %}
+                    </div>
+                {% endif %}
+
+                <form action="" method="post" class="flex flex-col">
+                    {% csrf_token %}
+                    {% for item in otp_modal_hidden_fields %}
+                        <input type="hidden" name="{{ item.name }}" value="{{ item.value }}">
+                    {% endfor %}
+                    <input type="hidden" name="_otp_modal_submit" value="1">
+                    {% include "unfold/helpers/field.html" with field=otp_verify_form.token %}
+
+                    <div class="flex flex-col gap-3 mt-4">
+                        {% component "unfold/components/button.html" with submit=1 variant="primary" class="submit-row w-full" %}
+                            {{ otp_modal_submit_label|default:_("验证并继续") }}
+                        {% endcomponent %}
+                    </div>
+                </form>
+            {% endcomponent %}
+        </div>
+    </div>
+</div>

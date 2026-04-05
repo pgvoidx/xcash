@@ -1,0 +1,175 @@
+{% extends 'unfold/layouts/base_simple.html' %}
+
+{% load i18n unfold %}
+
+{% block breadcrumbs %}{% endblock %}
+{% block title %}
+    {% trans '控制台 | Xcash' %}
+{% endblock %}
+
+{% block branding %}
+    <h1 id="site-name">
+        <a href="{% url 'admin:index' %}">{{ site_header }}</a>
+    </h1>
+{% endblock %}
+{% block extrahead %}
+    {% if plausible_domain %}
+        <script defer
+                data-domain="{{ plausible_domain }}"
+                src="https://plausible.io/js/script.js"></script>
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+    {% component "unfold/components/container.html" %}
+        {# 改动原因：首页底部内容直接贴近视口边缘，补充稳定的底部留白提升整体呼吸感。 #}
+        <div class="pb-12 md:pb-16">
+            {# 改动原因：旧版首页展示余额/返佣等占位字段，与支付网关商户的真实运营诉求脱节。 #}
+            <div class="mb-8">
+                {% component "unfold/components/title.html" with class="text-3xl mb-2" %}
+                    {% translate "经营看板" %}
+                {% endcomponent %}
+                {% component "unfold/components/text.html" with class="text-gray-500" %}
+                    {% translate "围绕成交、转化、积压与回调健康度的实时概览。" %}
+                {% endcomponent %}
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3 mb-8">
+                {% for item in snapshot_cards %}
+                    {% component "unfold/components/card.html" with class=item.tone %}
+                        {% component "unfold/components/text.html" with class="text-gray-500" %}
+                            {{ item.title }}
+                        {% endcomponent %}
+                        {% component "unfold/components/title.html" with class="text-3xl mt-2" %}
+                            {{ item.metric }}
+                        {% endcomponent %}
+                        {% component "unfold/components/text.html" with class="text-sm mt-3 text-gray-500" %}
+                            {{ item.subtitle }}
+                        {% endcomponent %}
+                    {% endcomponent %}
+                {% endfor %}
+            </div>
+
+            <div class="grid gap-8 xl:grid-cols-[2fr_1fr] mb-8">
+                {% trans "30日订单趋势" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    {% component "unfold/components/chart/bar.html" with data=chart height=320 %}{% endcomponent %}
+                {% endcomponent %}
+
+                {% trans "当前积压与风险" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    <div class="divide-y divide-gray-200">
+                        {% for row in backlog_rows %}
+                            <a href="{{ row.href }}" class="block py-4 first:pt-0 last:pb-0">
+                                <div class="flex items-start justify-between gap-4">
+                                    <div>
+                                        <div class="text-sm text-gray-500">{{ row.label }}</div>
+                                        <div class="text-xs text-gray-400 mt-1">{{ row.detail }}</div>
+                                    </div>
+                                    <div class="text-2xl font-semibold text-gray-900">{{ row.value }}</div>
+                                </div>
+                            </a>
+                        {% endfor %}
+                    </div>
+                {% endcomponent %}
+            </div>
+
+            <div class="grid gap-8 xl:grid-cols-2 mb-8">
+                {% trans "项目表现排行（30日）" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-sm">
+                            <thead class="text-left text-gray-500">
+                            <tr>
+                                <th class="py-2 pr-4">{% translate "项目" %}</th>
+                                <th class="py-2 pr-4">{% translate "成交额" %}</th>
+                                <th class="py-2 pr-4">{% translate "成功单" %}</th>
+                                <th class="py-2 pr-4">{% translate "转化率" %}</th>
+                                <th class="py-2">{% translate "在途" %}</th>
+                            </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                            {% for row in top_projects %}
+                                <tr>
+                                    <td class="py-3 pr-4 font-medium">{{ row.name }}</td>
+                                    <td class="py-3 pr-4">{{ row.gmv }}</td>
+                                    <td class="py-3 pr-4">{{ row.completed_orders }}</td>
+                                    <td class="py-3 pr-4">{{ row.conversion_rate }}</td>
+                                    <td class="py-3">{{ row.waiting_orders }}/{{ row.confirming_orders }}</td>
+                                </tr>
+                            {% empty %}
+                                <tr>
+                                    <td colspan="5" class="py-6 text-center text-gray-400">{% translate "暂无成交数据" %}</td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% endcomponent %}
+
+                {% trans "支付方式分布（30日）" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    <div class="divide-y divide-gray-200">
+                        {% for row in payment_methods %}
+                            <div class="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+                                <div>
+                                    <div class="font-medium">{{ row.label }}</div>
+                                    <div class="text-xs text-gray-400 mt-1">{% translate "成功账单" %} {{ row.order_count }} {% translate "笔" %}</div>
+                                </div>
+                                <div class="text-sm font-semibold">{{ row.gmv }}</div>
+                            </div>
+                        {% empty %}
+                            <div class="py-6 text-center text-gray-400">{% translate "暂无支付方式分布数据" %}</div>
+                        {% endfor %}
+                    </div>
+                {% endcomponent %}
+            </div>
+
+            <div class="grid gap-8 xl:grid-cols-[1fr_2fr]">
+                {% trans "系统健康" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    <div class="space-y-4">
+                        {% for item in health_cards %}
+                            <div class="rounded-2xl bg-gray-50 px-4 py-4">
+                                <div class="text-sm text-gray-500">{{ item.title }}</div>
+                                <div class="text-2xl font-semibold mt-2">{{ item.metric }}</div>
+                                <div class="text-xs text-gray-400 mt-2">{{ item.subtitle }}</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endcomponent %}
+
+                {% trans "需要关注" as title %}
+                {% component "unfold/components/card.html" with title=title %}
+                    <div class="divide-y divide-gray-200">
+                        {% for item in attention_items %}
+                            {% if item.href %}
+                                <a href="{{ item.href }}" class="block py-4 first:pt-0 last:pb-0">
+                                    <div class="flex items-start justify-between gap-4">
+                                        <div>
+                                            <div class="font-medium">{{ item.title }}</div>
+                                            <div class="text-sm text-gray-500 mt-1">{{ item.description }}</div>
+                                        </div>
+                                        <span class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">{{ item.level }}</span>
+                                    </div>
+                                </a>
+                            {% else %}
+                                <div class="block py-4 first:pt-0 last:pb-0">
+                                    <div class="flex items-start justify-between gap-4">
+                                        <div>
+                                            <div class="font-medium">{{ item.title }}</div>
+                                            <div class="text-sm text-gray-500 mt-1">{{ item.description }}</div>
+                                        </div>
+                                        <span class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">{{ item.level }}</span>
+                                    </div>
+                                </div>
+                            {% endif %}
+                        {% empty %}
+                            <div class="py-6 text-center text-gray-400">{% translate "当前没有需要人工介入的异常项" %}</div>
+                        {% endfor %}
+                    </div>
+                {% endcomponent %}
+            </div>
+        </div>
+    {% endcomponent %}
+{% endblock %}

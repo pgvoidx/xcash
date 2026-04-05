@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+from typing import TypedDict
+
+import structlog
+from django.db import transaction
+from django.utils import timezone
+from web3 import Web3
+
+from chains.models import Chain
+from chains.models import ChainType
+from chains.service import ObservedTransferPayload
+from chains.service import TransferService
+from evm.models import EvmScanCursor
+from evm.models import EvmScanCursorType
+from evm.scanner.constants import DEFAULT_NATIVE_SCAN_BATCH_SIZE
+from evm.scanner.constants import DEFAULT_REORG_LOOKBACK_BLOCKS
+from evm.scanner.cursor import bootstrap_cursor_to_latest_for_debug
+from evm.scanner.rpc import EvmScannerRpcClient
+from evm.scanner.rpc import EvmScannerRpcError
+from evm.scanner.watchers import EvmWatchSet
+from evm.scanner.watchers import load_watch_set
+
+logger = structlog.get_logger()
+
+
+class ParsedNativeTransfer(TypedDict):
+    """描述一笔已通过过滤的原生币直转交易。"""
+
+    tx_hash: str
+    from_address: str
+    to_address: str
+    value: Decimal
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class EvmNativeScanResult:
+    """描述一次原生币直转扫描的结果。"""
+
+    from_block: int
+    to_block: int
+    latest_block: int
+    observed_transfers: int
+    created_transfers: int
+
+
+class EvmNativeDirectScanner:
+    """扫描顶层原生币直接转账。
+
+    V1 明确只处理 input 为空的顶层 value transfer，不解析合约内部转账或带 calldata 的合约调用。
+    """
+
+    cursor_type = EvmScanCursorType.NATIVE_DIRECT
+
+    @classmethod
+    def scan_chain(
+        cls,
+        *,
+        chain: Chain,
+        batch_size: int = DEFAULT_NATIVE_SCAN_BATCH_SIZE,
+    ) -> EvmNativeScanResult:
+        if chain.type != ChainType.EVM:
+            raise ValueError(f"仅支持 EVM 链扫描，当前链为 {chain.code}")
+
+        cursor = cls._get_or_create_cursor(chain=chain)
+        rpc_client = EvmScannerRpcClient(chain=chain)
+
+        try:
+            latest_block = rpc_client.get_latest_block_number()
+            Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
+            cursor = bootstrap_cursor_to_latest_for_debug(
+                cursor=cursor,
+                latest_block=latest_block,
+            )
+
+            watch_set = load_watch_set(chain=chain)
+            if not watch_set.watched_addresses:
+                # 当前无系统 EVM 观察地址时，不需要为尚未纳入系统的历史直转保留积压；
+                # 直接把游标推进到链头，避免后台长期显示“未配置导致的伪卡住”。
+                cls._advance_cursor(
+                    cursor=cursor,
+                    latest_block=latest_block,
+                    scanned_to_block=latest_block,
+                )
+                return EvmNativeScanResult(
+                    from_block=0,
+                    to_block=0,
+                    latest_block=latest_block,
+                    observed_transfers=0,
+                    created_transfers=0,
+                )
+
+            from_block, to_block = cls._compute_scan_window(
+                cursor=cursor,
+                latest_block=latest_block,
+                confirm_block_count=chain.confirm_block_count,
+                batch_size=batch_size,
+            )
+            if from_block > to_block:
+                cls._mark_cursor_idle(cursor=cursor, latest_block=latest_block)
+                return EvmNativeScanResult(
+                    from_block=from_block,
+                    to_block=to_block,
+                    latest_block=latest_block,
+                    observed_transfers=0,
+                    created_transfers=0,
+                )
+
+            observed_transfers, created_transfers = cls._scan_blocks(
+                chain=chain,
+                rpc_client=rpc_client,
+                watch_set=watch_set,
+                from_block=from_block,
+                to_block=to_block,
+            )
+        except EvmScannerRpcError as exc:
+            cls._mark_cursor_error(cursor=cursor, exc=exc)
+            raise
+
+        cls._advance_cursor(
+            cursor=cursor,
+            latest_block=latest_block,
+            scanned_to_block=to_block,
+        )
+        return EvmNativeScanResult(
+            from_block=from_block,
+            to_block=to_block,
+            latest_block=latest_block,
+            observed_transfers=observed_transfers,
+            created_transfers=created_transfers,
+        )
+
+    @classmethod
+    def _get_or_create_cursor(cls, *, chain: Chain) -> EvmScanCursor:
+        with transaction.atomic():
+            cursor, _ = EvmScanCursor.objects.select_for_update().get_or_create(
+                chain=chain,
+                scanner_type=cls.cursor_type,
+                defaults={
+                    "last_scanned_block": 0,
+                    "last_safe_block": 0,
+                    "enabled": True,
+                },
+            )
+        return cursor
+
+    @staticmethod
+    def _compute_scan_window(
+        *,
+        cursor: EvmScanCursor,
+        latest_block: int,
+        confirm_block_count: int,
+        batch_size: int,
+    ) -> tuple[int, int]:
+        if latest_block <= 0:
+            return 0, -1
+
+        reorg_lookback = max(confirm_block_count, DEFAULT_REORG_LOOKBACK_BLOCKS)
+        if cursor.last_scanned_block <= 0:
+            from_block = 1
+        else:
+            from_block = max(1, cursor.last_scanned_block + 1 - reorg_lookback)
+
+        effective_batch_size = (
+            max(batch_size, reorg_lookback + 1)
+            if cursor.last_scanned_block > 0
+            else batch_size
+        )
+        # 原生币直转同样需要在接近链头时覆盖到最新块，避免只在旧窗口中反复重扫。
+        # 当 batch_size <= reorg_lookback 时，本轮总跨度若仍按 batch_size 计算，
+        # to_block 会回落到 last_scanned_block，导致游标零推进并永久卡住。
+        if (
+            cursor.last_scanned_block > 0
+            and latest_block - cursor.last_scanned_block <= batch_size
+        ):
+            to_block = latest_block
+        else:
+            to_block = min(latest_block, from_block + effective_batch_size - 1)
+        return from_block, to_block
+
+    @classmethod
+    def _scan_blocks(
+        cls,
+        *,
+        chain: Chain,
+        rpc_client: EvmScannerRpcClient,
+        watch_set: EvmWatchSet,
+        from_block: int,
+        to_block: int,
+    ) -> tuple[int, int]:
+        observed_transfers = 0
+        created_transfers = 0
+        decimals = chain.native_coin.get_decimals(chain)
+
+        for block_number in range(from_block, to_block + 1):
+            block: dict[str, Any] = rpc_client.get_full_block(block_number=block_number)
+            timestamp = int(block["timestamp"])
+            occurred_at = datetime.fromtimestamp(
+                timestamp,
+                tz=timezone.get_current_timezone(),
+            )
+            for tx in block.get("transactions", []) or []:
+                parsed = cls._parse_transaction(
+                    tx=tx,
+                    watched_addresses=watch_set.watched_addresses,
+                    decimals=decimals,
+                )
+                if parsed is None:
+                    continue
+
+                # OnchainTransfer 只表示成功链上资产移动；status=0 的失败交易不得落库。
+                receipt_status = rpc_client.get_transaction_receipt_status(
+                    tx_hash=parsed["tx_hash"]
+                )
+                if receipt_status != 1:
+                    continue
+
+                observed_transfers += 1
+                result = TransferService.create_observed_transfer(
+                    observed=ObservedTransferPayload(
+                        chain=chain,
+                        block=block_number,
+                        tx_hash=parsed["tx_hash"],
+                        event_id="native:tx",
+                        from_address=parsed["from_address"],
+                        to_address=parsed["to_address"],
+                        crypto=chain.native_coin,
+                        value=parsed["value"],
+                        amount=parsed["amount"],
+                        timestamp=timestamp,
+                        occurred_at=occurred_at,
+                        source="evm-scan",
+                    )
+                )
+                if result.created:
+                    created_transfers += 1
+
+        return observed_transfers, created_transfers
+
+    @staticmethod
+    def _parse_transaction(
+        *,
+        tx: dict[str, Any],
+        watched_addresses: frozenset[str],
+        decimals: int,
+    ) -> ParsedNativeTransfer | None:
+        raw_input = tx.get("input", "0x")
+        # 真实节点返回的空 calldata 可能是字符串、bytes 或 HexBytes；统一转 hex 后再判断直转。
+        input_hex = EvmNativeDirectScanner._to_hex(raw_input).lower()
+        if input_hex not in ("", "0"):
+            return None
+
+        raw_to = tx.get("to")
+        raw_from = tx.get("from")
+        if not raw_to or not raw_from:
+            return None
+
+        to_address = Web3.to_checksum_address(str(raw_to))
+        from_address = Web3.to_checksum_address(str(raw_from))
+        if (
+            to_address not in watched_addresses
+            and from_address not in watched_addresses
+        ):
+            return None
+
+        value = Decimal(int(tx.get("value", 0)))
+        if value <= 0:
+            return None
+
+        parsed_transfer: ParsedNativeTransfer = {
+            "tx_hash": f"0x{EvmNativeDirectScanner._to_hex(tx['hash']).lower()}",
+            "from_address": from_address,
+            "to_address": to_address,
+            "value": value,
+            "amount": Decimal(value).scaleb(-decimals),
+        }
+        return parsed_transfer
+
+    @staticmethod
+    def _to_hex(value: object) -> str:
+        if hasattr(value, "hex"):
+            hex_value = value.hex()
+        else:
+            hex_value = str(value)
+        return hex_value[2:] if hex_value.startswith("0x") else hex_value
+
+    @staticmethod
+    def _mark_cursor_idle(*, cursor: EvmScanCursor, latest_block: int) -> None:
+        EvmScanCursor.objects.filter(pk=cursor.pk).update(
+            last_safe_block=max(0, latest_block - cursor.chain.confirm_block_count),
+            last_error="",
+            last_error_at=None,
+            updated_at=timezone.now(),
+        )
+
+    @staticmethod
+    def _advance_cursor(
+        *,
+        cursor: EvmScanCursor,
+        latest_block: int,
+        scanned_to_block: int,
+    ) -> None:
+        EvmScanCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=max(cursor.last_scanned_block, scanned_to_block),
+            last_safe_block=max(0, latest_block - cursor.chain.confirm_block_count),
+            last_error="",
+            last_error_at=None,
+            updated_at=timezone.now(),
+        )
+
+    @staticmethod
+    def _mark_cursor_error(*, cursor: EvmScanCursor, exc: Exception) -> None:
+        logger.warning(
+            "EVM 原生币扫描失败",
+            chain=cursor.chain.code,
+            scanner_type=cursor.scanner_type,
+            error=str(exc),
+        )
+        EvmScanCursor.objects.filter(pk=cursor.pk).update(
+            last_error=str(exc)[:255],
+            last_error_at=timezone.now(),
+            updated_at=timezone.now(),
+        )

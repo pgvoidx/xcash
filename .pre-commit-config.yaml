@@ -1,0 +1,47 @@
+exclude: '^docs/|/migrations/|devcontainer.json'
+default_stages: [ pre-commit ]
+
+default_language_version:
+  python: python3.13
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-toml
+      - id: check-xml
+      - id: check-yaml
+      - id: debug-statements
+      - id: check-builtin-literals
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: detect-private-key
+
+  - repo: https://github.com/adamchainz/django-upgrade
+    rev: '1.19.0'
+    hooks:
+      - id: django-upgrade
+        args: [ '--target-version', '4.2' ]
+
+  # Black 代码格式化（在 ruff lint 之前运行，确保格式先统一）
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+
+  # Run the Ruff linter.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.1
+    hooks:
+      # Linter only（格式化由 black 负责，ruff-format 已移除避免冲突）
+      - id: ruff
+        args: [ --fix, --exit-non-zero-on-fix ]
+
+# sets up .pre-commit-ci.yaml to ensure pre-commit dependencies stay up to date
+ci:
+  autoupdate_schedule: weekly
+  skip: [ ]
+  submodules: false

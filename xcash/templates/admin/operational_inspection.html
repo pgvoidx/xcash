@@ -1,0 +1,87 @@
+{% extends 'unfold/layouts/base_simple.html' %}
+
+{% load i18n unfold %}
+
+{% block breadcrumbs %}{% endblock %}
+{% block title %}
+    {% trans '异常巡检 | Xcash' %}
+{% endblock %}
+
+{% block branding %}
+    <h1 id="site-name">
+        <a href="{% url 'admin:index' %}">{{ site_header }}</a>
+    </h1>
+{% endblock %}
+
+{% block content %}
+    {% component "unfold/components/container.html" %}
+        {# 改动原因：独立巡检页需要先给出总览，再展开明细，减少用户来回跳转。 #}
+        <div class="pb-12 md:pb-16">
+            <div class="mb-8">
+                {% component "unfold/components/title.html" with class="text-3xl mb-2" %}
+                    {% translate "异常巡检" %}
+                {% endcomponent %}
+                {% component "unfold/components/text.html" with class="text-gray-500" %}
+                    {% blocktranslate with count=attention_items_count %}当前共汇总 {{ count }} 个需要人工关注的异常或风险信号。{% endblocktranslate %}
+                {% endcomponent %}
+            </div>
+
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-5 mb-8">
+                {% for item in inspection_summary_cards %}
+                    {% component "unfold/components/card.html" with class=item.tone %}
+                        {% component "unfold/components/text.html" with class="text-gray-500" %}
+                            {{ item.title }}
+                        {% endcomponent %}
+                        {% component "unfold/components/title.html" with class="text-3xl mt-2" %}
+                            {{ item.metric }}
+                        {% endcomponent %}
+                        {% component "unfold/components/text.html" with class="text-sm mt-3 text-gray-500" %}
+                            {{ item.subtitle }}
+                        {% endcomponent %}
+                    {% endcomponent %}
+                {% endfor %}
+            </div>
+
+            {# 改动原因：按异常来源分段展示，便于运营人员快速定位到对应业务域处理。 #}
+            <div class="grid gap-8 xl:grid-cols-2">
+                {% for section in inspection_sections %}
+                    {% component "unfold/components/card.html" with title=section.title %}
+                        <div class="mb-4 flex items-start justify-between gap-4">
+                            <div class="text-sm text-gray-500">{{ section.subtitle }}</div>
+                            <span class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">
+                                {{ section.count }} {% translate "项" %}
+                            </span>
+                        </div>
+                        <div class="divide-y divide-gray-200">
+                            {% for item in section.rows %}
+                                {% if item.href %}
+                                    <a href="{{ item.href }}" class="block py-4 first:pt-0 last:pb-0">
+                                        <div class="flex items-start justify-between gap-4">
+                                            <div>
+                                                <div class="font-medium">{{ item.title }}</div>
+                                                <div class="text-sm text-gray-500 mt-1">{{ item.description }}</div>
+                                            </div>
+                                            <span class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">{{ item.level }}</span>
+                                        </div>
+                                    </a>
+                                {% else %}
+                                    <div class="block py-4 first:pt-0 last:pb-0">
+                                        <div class="flex items-start justify-between gap-4">
+                                            <div>
+                                                <div class="font-medium">{{ item.title }}</div>
+                                                <div class="text-sm text-gray-500 mt-1">{{ item.description }}</div>
+                                            </div>
+                                            <span class="inline-flex rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">{{ item.level }}</span>
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            {% empty %}
+                                <div class="py-6 text-center text-gray-400">{{ section.empty_text }}</div>
+                            {% endfor %}
+                        </div>
+                    {% endcomponent %}
+                {% endfor %}
+            </div>
+        </div>
+    {% endcomponent %}
+{% endblock %}

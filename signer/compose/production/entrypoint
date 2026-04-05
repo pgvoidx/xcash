@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# signer 生产容器启动前只等待 signer 自己依赖的数据库与缓存，避免继续复用主应用入口脚本。
+wait-for-it "${SIGNER_POSTGRES_HOST:-signer-db}:${SIGNER_POSTGRES_PORT:-5432}" -t 30
+>&2 echo 'Signer PostgreSQL is available'
+
+wait-for-it "${SIGNER_REDIS_HOST:-redis}:${SIGNER_REDIS_PORT:-6379}" -t 30
+>&2 echo 'Signer Redis is available'
+
+exec "$@"

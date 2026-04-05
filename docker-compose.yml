@@ -1,0 +1,125 @@
+volumes:
+  xcash_redis_data: {}
+  xcash_django_db_data: {}
+  xcash_signer_db_data: {}
+
+services:
+  redis:
+    image: redis:8.2.1
+    container_name: xcash_redis
+    restart: unless-stopped
+    volumes:
+      - xcash_redis_data:/data
+
+  django-db:
+    image: postgres:18.3-trixie
+    container_name: xcash_django_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 一键部署固定主应用数据库标识；用户只需要管理数据库口令。
+      POSTGRES_DB: xcash
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - xcash_django_db_data:/var/lib/postgresql
+
+  signer-db:
+    image: postgres:18.3-trixie
+    container_name: xcash_signer_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # signer 独立数据库固定命名，避免与主应用数据库边界混淆。
+      POSTGRES_DB: xcash_signer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${SIGNER_POSTGRES_PASSWORD}
+    volumes:
+      - xcash_signer_db_data:/var/lib/postgresql
+
+  signer:
+    build:
+      context: .
+      dockerfile: ./signer/compose/production/Dockerfile
+    image: xcash_signer
+    container_name: xcash_signer
+    restart: unless-stopped
+    depends_on:
+      - signer-db
+      - redis
+    env_file:
+      - .env
+    environment:
+      # signer 只持有地址派生与签名职责，数据库与缓存地址固定指向自身依赖。
+      DJANGO_SETTINGS_MODULE: config.settings
+      POSTGRES_HOST: signer-db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SIGNER_ALLOWED_HOSTS: signer,localhost,127.0.0.1
+      SIGNER_SHARED_SECRET: ${SIGNER_SHARED_SECRET}
+      SIGNER_REDIS_HOST: redis
+      SIGNER_REDIS_PORT: 6379
+    command: /start
+
+  django: &django
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+    image: xcash_django
+    container_name: xcash_django
+    restart: unless-stopped
+    depends_on:
+      - django-db
+      - redis
+      - signer
+    env_file:
+      - .env
+    environment:
+      # 自托管入口只暴露域名、口令和密钥；内部服务拓扑在 compose 中固定。
+      DJANGO_SETTINGS_MODULE: config.settings.production
+      POSTGRES_HOST: django-db
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/0
+      SIGNER_BACKEND: remote
+      SIGNER_BASE_URL: http://signer:8000
+      SIGNER_TIMEOUT: 8
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dash.rule=Host(`${SITE_DOMAIN}`)"
+      - "traefik.http.routers.dash.entrypoints=web"
+      - "traefik.http.routers.dash.service=dash"
+      - "traefik.http.services.dash.loadbalancer.server.port=8000"
+    command: /start
+
+  worker:
+    <<: *django
+    image: xcash_worker
+    container_name: xcash_worker
+    labels: []
+    command: /start-worker
+
+  beat:
+    <<: *django
+    image: xcash_beat
+    container_name: xcash_beat
+    labels: []
+    command: /start-beat
+
+  traefik:
+    image: traefik:v3.6.11
+    container_name: xcash_traefik
+    restart: unless-stopped
+    depends_on:
+      - django
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "0.0.0.0:80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

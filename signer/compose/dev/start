@@ -1,0 +1,21 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+cd /app/signer
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/app/signer/.venv}"
+
+wait-for-it "${SIGNER_POSTGRES_HOST:-signer-db}:${SIGNER_POSTGRES_PORT:-5432}" -t 30
+>&2 echo 'Signer PostgreSQL is available'
+
+wait-for-it "${SIGNER_REDIS_HOST:-redis}:${SIGNER_REDIS_PORT:-6379}" -t 30
+>&2 echo 'Signer Redis is available'
+
+# signer 开发容器启动前自动应用自身迁移，保持“docker compose up”即可用的体验。
+# 开发环境 bind mount 会把宿主机 .venv 带进容器；这里强制使用 signer 项目自己的 uv 环境，
+# 避免误加载宿主机 macOS 二进制导致 invalid ELF header。
+uv run --project /app/signer python manage.py migrate --noinput
+
+exec uv run --project /app/signer python manage.py runserver 0.0.0.0:8000
