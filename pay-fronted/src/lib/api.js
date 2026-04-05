@@ -1,24 +1,5 @@
-// API 基础配置
-const LOCAL_API_BASE = 'http://127.0.0.1:8000/v1'
-const PROD_API_BASE = 'https://dash.xca.sh/v1'
-
-const resolveApiBaseUrl = () => {
-  const envBase = import.meta.env?.VITE_API_BASE_URL
-  if (envBase) {
-    return envBase.replace(/\/$/, '')
-  }
-
-  if (typeof window !== 'undefined') {
-    const hostname = window.location.hostname
-    if (hostname === '127.0.0.1' || hostname === 'localhost') {
-      return LOCAL_API_BASE
-    }
-  }
-
-  return PROD_API_BASE
-}
-
-const API_BASE_URL = resolveApiBaseUrl()
+// API 基础地址：根据当前页面地址动态拼接
+const API_BASE_URL = `${window.location.origin}/v1`
 
 const handleResponse = async (response, defaultMessage) => {
   if (response.ok) {
