@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.core.cache import cache
@@ -291,6 +292,40 @@ class SignerWalletSignPolicyTests(TestCase):
         }
         return json.dumps(payload).encode("utf-8")
 
+    @staticmethod
+    def _bitcoin_sign_body(
+        *,
+        wallet: SignerWallet,
+        recipient: str,
+        replaceable: bool,
+    ) -> bytes:
+        source_address = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=0,
+        )
+        payload = {
+            "wallet_id": wallet.xcash_wallet_id,
+            "chain_type": ChainType.BITCOIN,
+            "bip44_account": 0,
+            "address_index": 0,
+            "source_address": source_address,
+            "to": recipient,
+            "amount_satoshi": 1000,
+            "fee_satoshi": 200,
+            "replaceable": replaceable,
+            "utxos": [
+                {
+                    "txid": "ab" * 32,
+                    "vout": 0,
+                    "amount": "0.001",
+                    "confirmations": 12,
+                    "script_pub_key": "76a914",
+                }
+            ],
+        }
+        return json.dumps(payload).encode("utf-8")
+
     def test_frozen_wallet_cannot_sign(self):
         wallet = self._create_wallet(wallet_id=3001, status=SignerWallet.Status.FROZEN)
         body = self._evm_sign_body(wallet=wallet, nonce=1)
@@ -369,6 +404,60 @@ class SignerWalletSignPolicyTests(TestCase):
                 **self._signed_headers(body=body),
             )
             self.assertEqual(response.status_code, 200)
+
+    @patch("wallets.views.SignBitcoinView._load_bit_dependencies")
+    def test_bitcoin_sign_endpoint_passes_replaceable_flag_to_bit_library(
+        self,
+        load_bit_dependencies_mock,
+    ):
+        wallet = self._create_wallet(wallet_id=3004)
+        create_transaction_kwargs = {}
+
+        class DummyUnspent:
+            def __init__(
+                self,
+                *,
+                amount,
+                confirmations,
+                script,
+                txid,
+                txindex,
+            ):
+                self.amount = amount
+                self.confirmations = confirmations
+                self.script = script
+                self.txid = txid
+                self.txindex = txindex
+
+        class DummyKey:
+            def __init__(self, _wif):
+                self.unspents = []
+
+            def create_transaction(self, **kwargs):
+                create_transaction_kwargs.update(kwargs)
+                return "00"
+
+        load_bit_dependencies_mock.return_value = (DummyKey, DummyUnspent)
+        recipient = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=1,
+        )
+        body = self._bitcoin_sign_body(
+            wallet=wallet,
+            recipient=recipient,
+            replaceable=True,
+        )
+
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(create_transaction_kwargs.get("replace_by_fee"))
 
 
 @override_settings(

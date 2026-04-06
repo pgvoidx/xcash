@@ -160,6 +160,7 @@ class TestRemoteSignerBackend:
         to: str,
         amount_satoshi: int,
         fee_satoshi: int,
+        replaceable: bool,
         utxos: list[dict],
     ) -> BitcoinSignedPayload:
         private_key_cls, bit_unspent = self._load_bit_dependencies()
@@ -167,7 +168,7 @@ class TestRemoteSignerBackend:
             bit_unspent(
                 amount=btc_to_satoshi(utxo["amount"]),
                 confirmations=int(utxo.get("confirmations", 0)),
-                script=utxo["scriptPubKey"],
+                script=utxo.get("scriptPubKey") or utxo.get("script_pub_key"),
                 txid=utxo["txid"],
                 txindex=int(utxo["vout"]),
             )
@@ -189,6 +190,7 @@ class TestRemoteSignerBackend:
             absolute_fee=True,
             leftover=source_address,
             unspents=bit_utxos,
+            replace_by_fee=replaceable,
         )
         return BitcoinSignedPayload(
             txid=compute_txid(signed_payload),

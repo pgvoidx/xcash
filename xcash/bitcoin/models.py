@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from django.db import IntegrityError
@@ -12,8 +13,10 @@ from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
 from bitcoin.utils import btc_to_satoshi
 from bitcoin.utils import ensure_bitcoin_native_currency
+from bitcoin.utils import is_replaceable_signed_transaction
 from bitcoin.utils import sat_per_byte_from_btc_per_kb
 from bitcoin.utils import select_utxos_for_amount
+from bitcoin.utils import select_utxos_for_sweep
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskFailureReason
@@ -136,6 +139,8 @@ class BitcoinBroadcastTask(UndeletableModel):
             ):
                 returned_txid = self.base_task.tx_hash
             elif "txn-mempool-conflict" in msg or "missingorspent" in msg:
+                if self._should_ignore_conflict_failure():
+                    return
                 # UTXO 已被其他交易占用时，任务应明确失败并释放预留，避免进入无限重试。
                 self._finalize_failure(BroadcastTaskFailureReason.DOUBLE_SPEND)
                 return
@@ -172,9 +177,105 @@ class BitcoinBroadcastTask(UndeletableModel):
         )
         BitcoinReservedUtxo.release_for_broadcast_task(self.base_task_id)
 
+        if self.base_task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.service import WithdrawalService
+
+            WithdrawalService.fail_withdrawal(broadcast_task=self.base_task)
+        elif self.base_task.transfer_type == TransferType.DepositCollection:
+            from deposits.models import DepositCollection
+            from deposits.service import DepositService
+
+            collection = DepositCollection.objects.filter(
+                broadcast_task=self.base_task
+            ).first()
+            if collection is None and self.base_task.tx_hash:
+                collection = DepositCollection.objects.filter(
+                    collection_hash=self.base_task.tx_hash
+                ).first()
+            if collection is not None:
+                DepositService.drop_collection(collection)
+
     @staticmethod
     def _raise_invalid_transfer(message: str) -> None:
         raise ValueError(message)
+
+    def _should_ignore_conflict_failure(self) -> bool:
+        """并发提费后，旧 worker 再广播旧 payload 不应把当前任务误判成失败。"""
+        fresh_task = (
+            type(self)
+            .objects.select_related("base_task")
+            .filter(pk=self.pk)
+            .first()
+        )
+        if fresh_task is None:
+            return True
+        if fresh_task.signed_payload != self.signed_payload:
+            return True
+        if (
+            fresh_task.base_task_id
+            and self.base_task_id
+            and fresh_task.base_task.tx_hash != self.base_task.tx_hash
+        ):
+            return True
+        if (
+            fresh_task.base_task_id
+            and fresh_task.base_task.result != BroadcastTaskResult.UNKNOWN
+        ):
+            return True
+        return False
+
+    @property
+    def is_replaceable(self) -> bool:
+        return is_replaceable_signed_transaction(self.signed_payload)
+
+    def load_reserved_utxos(self, *, client: BitcoinRpcClient) -> list[BitcoinUtxo]:
+        """根据数据库里的预留输入重建 signer 需要的 UTXO 明细。"""
+        if not self.base_task_id:
+            return []
+
+        reservations = list(
+            BitcoinReservedUtxo.objects.filter(
+                broadcast_task_id=self.base_task_id,
+                released_at__isnull=True,
+            ).order_by("created_at", "pk")
+        )
+        utxos: list[BitcoinUtxo] = []
+        for reservation in reservations:
+            raw_tx = client.get_raw_transaction(reservation.txid)
+            if raw_tx is None:
+                raise ValueError(f"无法加载预留 UTXO 的前序交易: {reservation.txid}")
+
+            matched_output = None
+            for output in raw_tx.get("vout", []) or []:
+                if int(output.get("n", -1)) == reservation.vout:
+                    matched_output = output
+                    break
+            if matched_output is None:
+                raise ValueError(
+                    f"预留 UTXO 在前序交易中不存在: {reservation.txid}:{reservation.vout}"
+                )
+
+            script_pub_key = matched_output.get("scriptPubKey", {}) or {}
+            script_hex = (
+                script_pub_key.get("hex")
+                if isinstance(script_pub_key, dict)
+                else None
+            )
+            if not script_hex:
+                raise ValueError(
+                    f"预留 UTXO 缺少 scriptPubKey.hex: {reservation.txid}:{reservation.vout}"
+                )
+
+            utxos.append(
+                {
+                    "txid": reservation.txid,
+                    "vout": reservation.vout,
+                    "amount": matched_output.get("value", "0"),
+                    "confirmations": int(raw_tx.get("confirmations", 0) or 0),
+                    "scriptPubKey": str(script_hex),
+                }
+            )
+        return utxos
 
     @classmethod
     def schedule_transfer(
@@ -187,6 +288,7 @@ class BitcoinBroadcastTask(UndeletableModel):
         amount: Decimal,
         transfer_type: TransferType,
         verify_fn: Callable[[], None] | None = None,
+        sweep: bool = False,
     ) -> BitcoinBroadcastTask:
         """构建并签名 Bitcoin P2PKH 交易，原子写入 DB。
 
@@ -219,23 +321,31 @@ class BitcoinBroadcastTask(UndeletableModel):
                 )
                 cls._raise_invalid_transfer(msg)
 
-            amount_satoshi = btc_to_satoshi(amount)
-            if amount_satoshi <= 0:
-                msg = "Bitcoin 转账金额必须大于 0"
-                cls._raise_invalid_transfer(msg)
-
-            # 核心业务逻辑：
-            # 1. 先从节点返回的 UTXO 中挑出一组输入；
-            # 2. 按输入数保守估算 2 输出（收款 + 找零）的手续费；
-            # 3. 再把同一组输入交给 bit 构建交易，避免"估费与选币不一致"。
             fee_rate_sat_per_byte = sat_per_byte_from_btc_per_kb(
                 client.estimate_smart_fee()
             )
-            selected_utxos, fee_satoshi = select_utxos_for_amount(
-                utxos=raw_utxos,
-                amount_satoshi=amount_satoshi,
-                fee_rate_sat_per_byte=fee_rate_sat_per_byte,
-            )
+            if sweep:
+                # sweep 直接基于当前全部可用 UTXO 计算净额，避免归集时先猜金额再被实际手续费打回。
+                selected_utxos, amount_satoshi, fee_satoshi = select_utxos_for_sweep(
+                    utxos=raw_utxos,
+                    fee_rate_sat_per_byte=fee_rate_sat_per_byte,
+                )
+                amount = Decimal(amount_satoshi).scaleb(-8)
+            else:
+                amount_satoshi = btc_to_satoshi(amount)
+                if amount_satoshi <= 0:
+                    msg = "Bitcoin 转账金额必须大于 0"
+                    cls._raise_invalid_transfer(msg)
+
+                # 核心业务逻辑：
+                # 1. 先从节点返回的 UTXO 中挑出一组输入；
+                # 2. 按输入数保守估算 2 输出（收款 + 找零）的手续费；
+                # 3. 再把同一组输入交给 bit 构建交易，避免"估费与选币不一致"。
+                selected_utxos, fee_satoshi = select_utxos_for_amount(
+                    utxos=raw_utxos,
+                    amount_satoshi=amount_satoshi,
+                    fee_rate_sat_per_byte=fee_rate_sat_per_byte,
+                )
 
             signer_result = get_signer_backend().sign_bitcoin_transaction(
                 address=address,
@@ -244,6 +354,7 @@ class BitcoinBroadcastTask(UndeletableModel):
                 to=to,
                 amount_satoshi=amount_satoshi,
                 fee_satoshi=fee_satoshi,
+                replaceable=transfer_type == TransferType.Withdrawal,
                 utxos=selected_utxos,
             )
 

@@ -711,6 +711,7 @@ class SignerBackendTests(TestCase):
             to="1KFHE7w8BhaENAswwryaoccDb6qcT6DbYY",
             amount_satoshi=10_000,
             fee_satoshi=250,
+            replaceable=True,
             utxos=[
                 {
                     "txid": "cd" * 32,
@@ -730,6 +731,8 @@ class SignerBackendTests(TestCase):
         self.assertIn('"bip44_account":1', body)
         self.assertIn('"address_index":0', body)
         self.assertIn('"source_address":"1BoatSLRHtKNngkdXEeobR76b53LETtpyT"', body)
+        self.assertIn('"replaceable":true', body)
+        self.assertIn('"script_pub_key":"76a914"', body)
 
     @override_settings(
         SIGNER_BACKEND="remote",

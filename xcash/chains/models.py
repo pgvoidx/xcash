@@ -327,6 +327,7 @@ class Wallet(UndeletableModel):
                 f"signer 服务不可用，无法为钱包 {self.pk} 派生地址"
             ) from exc
 
+        created = False
         try:
             addr_obj, created = Address.objects.get_or_create(
                 wallet=self,
@@ -368,6 +369,14 @@ class Wallet(UndeletableModel):
                 f"expected_bip44_account={bip44_account} actual_bip44_account={addr_obj.bip44_account} "
                 f"expected_address={expected_address} actual_address={addr_obj.address}"
             )
+
+        chain_type_value = (
+            chain_type.value if isinstance(chain_type, ChainType) else str(chain_type)
+        )
+        if created and chain_type_value == ChainType.BITCOIN:
+            from bitcoin.watch_sync import schedule_watch_address_sync_on_commit
+
+            schedule_watch_address_sync_on_commit()
         return addr_obj
 
 
@@ -787,7 +796,7 @@ class BroadcastTask(UndeletableModel):
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0
-        return (
+        updated = (
             BroadcastTask.objects.filter(pk=task.pk, result=BroadcastTaskResult.UNKNOWN)
             .exclude(stage=BroadcastTaskStage.FINALIZED)
             .update(
@@ -798,6 +807,14 @@ class BroadcastTask(UndeletableModel):
                 updated_at=timezone.now(),
             )
         )
+        if updated and task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.models import Withdrawal
+
+            Withdrawal.objects.filter(broadcast_task=task).update(
+                hash=tx_hash,
+                updated_at=timezone.now(),
+            )
+        return updated
 
     @staticmethod
     def mark_finalized_failed(
@@ -833,7 +850,7 @@ class BroadcastTask(UndeletableModel):
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0
-        return BroadcastTask.objects.filter(
+        updated = BroadcastTask.objects.filter(
             pk=task.pk,
             stage=BroadcastTaskStage.PENDING_CONFIRM,
             result=BroadcastTaskResult.UNKNOWN,
@@ -844,6 +861,14 @@ class BroadcastTask(UndeletableModel):
             failure_reason="",
             updated_at=timezone.now(),
         )
+        if updated and task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.models import Withdrawal
+
+            Withdrawal.objects.filter(broadcast_task=task).update(
+                hash=tx_hash,
+                updated_at=timezone.now(),
+            )
+        return updated
 
     @staticmethod
     def mark_pending_confirm(*, chain: Chain, tx_hash: str) -> int:
@@ -857,7 +882,7 @@ class BroadcastTask(UndeletableModel):
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0
-        return (
+        updated = (
             BroadcastTask.objects.filter(pk=task.pk)
             .exclude(stage=BroadcastTaskStage.FINALIZED)
             .update(
@@ -868,6 +893,14 @@ class BroadcastTask(UndeletableModel):
                 updated_at=timezone.now(),
             )
         )
+        if updated and task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.models import Withdrawal
+
+            Withdrawal.objects.filter(broadcast_task=task).update(
+                hash=tx_hash,
+                updated_at=timezone.now(),
+            )
+        return updated
 
 
 class TransferStatus(models.TextChoices):

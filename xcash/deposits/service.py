@@ -194,6 +194,8 @@ class DepositService:
             "chain": chain,
             "recipient_address": recipient.address,
             "amount": amount,
+            "sweep": chain.type == ChainType.BITCOIN
+            and (crypto == chain.native_coin or crypto.is_native),
             "deposit_id": deposit.id,
         }
 
@@ -226,13 +228,36 @@ class DepositService:
                 )
                 return True
 
-            tx_hash = params["address"].send_crypto(
-                crypto=params["crypto"],
-                chain=params["chain"],
-                to=params["recipient_address"],
-                amount=params["amount"],
-                transfer_type=TransferType.DepositCollection,
-            )
+            if params["chain"].type == ChainType.BITCOIN:
+                from bitcoin.models import BitcoinBroadcastTask
+                from bitcoin.tasks import broadcast_bitcoin_broadcast_task
+
+                task = BitcoinBroadcastTask.schedule_transfer(
+                    address=params["address"],
+                    crypto=params["crypto"],
+                    chain=params["chain"],
+                    to=params["recipient_address"],
+                    amount=params["amount"],
+                    transfer_type=TransferType.DepositCollection,
+                    sweep=bool(params.get("sweep")),
+                )
+                task_pk = task.pk
+                db_transaction.on_commit(
+                    lambda: broadcast_bitcoin_broadcast_task.apply_async(
+                        args=(task_pk,), countdown=1
+                    )
+                )
+                tx_hash = task.base_task.tx_hash
+                broadcast_task = task.base_task
+            else:
+                tx_hash = params["address"].send_crypto(
+                    crypto=params["crypto"],
+                    chain=params["chain"],
+                    to=params["recipient_address"],
+                    amount=params["amount"],
+                    transfer_type=TransferType.DepositCollection,
+                )
+                broadcast_task = None
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "归集充币失败，清理占位 collection",
@@ -246,9 +271,14 @@ class DepositService:
             return False
 
         # 广播成功：回写真实 tx_hash
+        update_kwargs = {
+            "collection_hash": tx_hash,
+            "updated_at": timezone.now(),
+        }
+        if broadcast_task is not None:
+            update_kwargs["broadcast_task"] = broadcast_task
         DepositCollection.objects.filter(pk=params["collection_id"]).update(
-            collection_hash=tx_hash,
-            updated_at=timezone.now(),
+            **update_kwargs
         )
         return True
 

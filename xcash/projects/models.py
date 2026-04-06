@@ -206,8 +206,28 @@ class RecipientAddress(models.Model):
 
     def save(self, *args, **kwargs):
         # 收币地址的链上发现完全由内部扫描器负责；模型层只保留数据校验，不再派发外部订阅同步。
+        previous = None
+        if self.pk is not None:
+            previous = (
+                RecipientAddress.objects.filter(pk=self.pk)
+                .values("chain_type", "address")
+                .first()
+            )
         self.full_clean()
-        return super().save(*args, **kwargs)
+        result = super().save(*args, **kwargs)
+
+        should_schedule_sync = self.chain_type == ChainType.BITCOIN and (
+            previous is None
+            or previous["chain_type"] != self.chain_type
+            or previous["address"] != self.address
+        )
+        if should_schedule_sync:
+            from bitcoin.watch_sync import schedule_watch_address_sync_on_commit
+
+            # 管理后台保存项目 BTC 收款地址后，提交事务即可把 watch-only 同步到节点钱包。
+            schedule_watch_address_sync_on_commit()
+
+        return result
 
     def clean(self) -> None:
         """归档链生态后，只允许项目录入 EVM / Bitcoin 收币地址。"""

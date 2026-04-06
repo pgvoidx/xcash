@@ -100,6 +100,7 @@ class SignerBackend:
         to: str,
         amount_satoshi: int,
         fee_satoshi: int,
+        replaceable: bool,
         utxos: list[BitcoinUtxo],
     ) -> BitcoinSignedPayload:
         raise NotImplementedError
@@ -265,8 +266,17 @@ class RemoteSignerBackend(SignerBackend):
         to: str,
         amount_satoshi: int,
         fee_satoshi: int,
+        replaceable: bool,
         utxos: list[BitcoinUtxo],
     ) -> BitcoinSignedPayload:
+        normalized_utxos = [
+            {
+                **utxo,
+                "script_pub_key": utxo.get("script_pub_key")
+                or utxo.get("scriptPubKey"),
+            }
+            for utxo in utxos
+        ]
         payload = self._post_json(
             path="/v1/sign/bitcoin",
             request_body={
@@ -278,7 +288,8 @@ class RemoteSignerBackend(SignerBackend):
                 "to": to,
                 "amount_satoshi": amount_satoshi,
                 "fee_satoshi": fee_satoshi,
-                "utxos": utxos,
+                "replaceable": replaceable,
+                "utxos": normalized_utxos,
             },
         )
         try:

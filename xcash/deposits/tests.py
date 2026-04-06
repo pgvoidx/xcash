@@ -29,6 +29,7 @@ from deposits.service import DepositService
 from deposits.tasks import gather_deposits
 from evm.models import EvmBroadcastTask
 from projects.models import Project
+from projects.models import RecipientAddress
 from users.models import Customer
 from users.models import User
 
@@ -308,6 +309,123 @@ class DepositServiceCoreTests(TestCase):
         expected_amount = Decimal(balance_raw - expected_fee).scaleb(-crypto_decimals)
         self.assertEqual(amount, expected_amount)
         self.assertGreater(amount, Decimal("0"))
+
+
+class DepositBitcoinCollectionTests(TestCase):
+    @patch("bitcoin.tasks.broadcast_bitcoin_broadcast_task.apply_async")
+    @patch("bitcoin.models.get_signer_backend")
+    @patch(
+        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
+        return_value=Decimal("0.001"),
+    )
+    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
+    @patch("deposits.service.AdapterFactory.get_adapter")
+    def test_collect_bitcoin_native_sweeps_full_balance_with_actual_fee(
+        self,
+        adapter_factory_mock,
+        list_unspent_mock,
+        _estimate_fee_mock,
+        get_signer_backend_mock,
+        _broadcast_apply_async_mock,
+    ):
+        # BTC 原生币归集不能先按固定 fee 盲扣后再发送，否则多 UTXO 场景会一直扫尾失败。
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(name="BTC Sweep Project", wallet=wallet)
+        customer = Customer.objects.create(project=project, uid="btc-sweep-user")
+        native = Crypto.objects.create(
+            name="Bitcoin Sweep Native",
+            symbol="BTCSW",
+            coingecko_id="bitcoin-sweep-native",
+            decimals=8,
+        )
+        chain = Chain.objects.create(
+            name="Bitcoin Sweep",
+            code="btc-sweep",
+            type=ChainType.BITCOIN,
+            native_coin=native,
+            rpc="http://bitcoin.sweep",
+            active=True,
+            confirm_block_count=1,
+        )
+        deposit_addr = Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.BITCOIN,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=ChainType.BITCOIN,
+            address=deposit_addr,
+        )
+        RecipientAddress.objects.create(
+            name="btc-sweep-recipient",
+            project=project,
+            chain_type=ChainType.BITCOIN,
+            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            used_for_invoice=False,
+            used_for_deposit=True,
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="3" * 64,
+            event_id="vout:0",
+            crypto=native,
+            from_address="12cbQLTFMXRnSzktFkuoG3eHoMeFtpTu3S",
+            to_address=deposit_addr.address,
+            value=Decimal("100000"),
+            amount=Decimal("0.001"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        deposit = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer,
+            status=DepositStatus.COMPLETED,
+        )
+
+        adapter_factory_mock.return_value = SimpleNamespace(
+            get_balance=Mock(return_value=100_000)
+        )
+        list_unspent_mock.return_value = [
+            {
+                "txid": "utxo-1",
+                "vout": 0,
+                "amount": "0.0005",
+                "confirmations": 6,
+                "scriptPubKey": "76a914",
+            },
+            {
+                "txid": "utxo-2",
+                "vout": 1,
+                "amount": "0.0005",
+                "confirmations": 6,
+                "scriptPubKey": "76a914",
+            },
+        ]
+        signer_backend = SimpleNamespace(
+            sign_bitcoin_transaction=Mock(
+                return_value=SimpleNamespace(
+                    txid="4" * 64,
+                    signed_payload="signed-payload",
+                )
+            )
+        )
+        get_signer_backend_mock.return_value = signer_backend
+
+        collected = DepositService.collect_deposit(deposit)
+
+        self.assertTrue(collected)
+        deposit.refresh_from_db()
+        self.assertIsNotNone(deposit.collection_id)
+        self.assertEqual(deposit.collection.collection_hash, "4" * 64)
+        self.assertIsNotNone(deposit.collection.broadcast_task_id)
+        signer_backend.sign_bitcoin_transaction.assert_called_once()
 
 
 class DepositServiceDecimalsTests(SimpleTestCase):

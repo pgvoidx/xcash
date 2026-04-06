@@ -445,6 +445,7 @@ class SignBitcoinSerializer(serializers.Serializer):
     to = serializers.CharField()
     amount_satoshi = serializers.IntegerField(min_value=_BTC_DUST_LIMIT)
     fee_satoshi = serializers.IntegerField(min_value=1)
+    replaceable = serializers.BooleanField(required=False, default=False)
     utxos = BitcoinUtxoSerializer(many=True, allow_empty=False)
 
     def validate_to(self, value):
@@ -705,6 +706,7 @@ class SignBitcoinView(SignerAPIView):
                 absolute_fee=True,
                 leftover=data["source_address"],
                 unspents=bit_utxos,
+                replace_by_fee=data["replaceable"],
             )
         except Exception:
             # 截断异常链，防止 traceback frame 中的私钥泄露到日志系统。

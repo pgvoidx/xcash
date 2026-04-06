@@ -36,6 +36,8 @@ class BitcoinReceiptScanner:
             raise ValueError(msg)
 
         cursor = cls._get_or_create_cursor(chain=chain)
+        if not cursor.enabled:
+            return 0
         watch_set = load_watch_set()
         client = BitcoinRpcClient(chain.rpc)
 

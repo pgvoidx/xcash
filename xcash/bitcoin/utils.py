@@ -101,6 +101,34 @@ def select_utxos_for_amount(
     raise ValueError(msg)
 
 
+def select_utxos_for_sweep(
+    *,
+    utxos: Sequence[BitcoinUtxo],
+    fee_rate_sat_per_byte: int,
+) -> tuple[list[BitcoinUtxo], int, int]:
+    """选择全部 UTXO 执行 sweep，并返回可转出净额与矿工费。
+
+    sweep 语义用于归集：把地址上当前全部可用余额一次性打到目标地址，
+    不再依赖调用方先用固定 fee 预扣一个"大概金额"。
+    """
+    selected = list(utxos)
+    if not selected:
+        raise ValueError("Bitcoin sweep 缺少可用 UTXO")
+
+    total_satoshi = sum(btc_to_satoshi(utxo["amount"]) for utxo in selected)
+    fee_satoshi = (
+        estimate_p2pkh_tx_vbytes(
+            input_count=len(selected),
+            output_count=1,
+        )
+        * fee_rate_sat_per_byte
+    )
+    amount_satoshi = total_satoshi - fee_satoshi
+    if amount_satoshi <= 0:
+        raise ValueError("Bitcoin UTXO 余额不足以覆盖 sweep 矿工费")
+    return selected, amount_satoshi, fee_satoshi
+
+
 def privkey_bytes_to_wif(privkey_bytes: bytes) -> str:
     """将原始 32 字节 secp256k1 私钥转换为当前网络 WIF（压缩格式）。"""
     network = get_active_bitcoin_network()
@@ -114,3 +142,65 @@ def compute_txid(signed_payload_hex: str) -> str:
     tx_bytes = bytes.fromhex(signed_payload_hex)
     txid_bytes = hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()
     return txid_bytes[::-1].hex()
+
+
+def _read_bitcoin_varint(raw: bytes, offset: int) -> tuple[int, int]:
+    if offset >= len(raw):
+        raise ValueError("Bitcoin 原始交易缺少 varint")
+
+    prefix = raw[offset]
+    if prefix < 0xFD:
+        return prefix, offset + 1
+    if prefix == 0xFD:
+        end = offset + 3
+        if end > len(raw):
+            raise ValueError("Bitcoin 原始交易 varint(uint16) 不完整")
+        return int.from_bytes(raw[offset + 1 : end], "little"), end
+    if prefix == 0xFE:
+        end = offset + 5
+        if end > len(raw):
+            raise ValueError("Bitcoin 原始交易 varint(uint32) 不完整")
+        return int.from_bytes(raw[offset + 1 : end], "little"), end
+
+    end = offset + 9
+    if end > len(raw):
+        raise ValueError("Bitcoin 原始交易 varint(uint64) 不完整")
+    return int.from_bytes(raw[offset + 1 : end], "little"), end
+
+
+def extract_input_sequences_from_raw_transaction(
+    signed_payload_hex: str,
+) -> list[int]:
+    """从原始交易 hex 中提取每个输入的 nSequence，用于判断是否 opt-in RBF。"""
+    raw = bytes.fromhex(signed_payload_hex)
+    if len(raw) < 5:
+        raise ValueError("Bitcoin 原始交易长度不足")
+
+    offset = 4
+    if len(raw) > offset + 1 and raw[offset] == 0 and raw[offset + 1] == 1:
+        # segwit 交易在 version 后插入 marker/flag；当前项目主用 P2PKH，
+        # 这里仍保留解析兼容，避免后续地址类型扩展时重复造轮子。
+        offset += 2
+
+    input_count, offset = _read_bitcoin_varint(raw, offset)
+    sequences: list[int] = []
+    for _ in range(input_count):
+        if offset + 36 > len(raw):
+            raise ValueError("Bitcoin 原始交易缺少完整输入前缀")
+        offset += 36  # prevout txid(32) + vout(4)
+        script_length, offset = _read_bitcoin_varint(raw, offset)
+        if offset + script_length + 4 > len(raw):
+            raise ValueError("Bitcoin 原始交易缺少完整 scriptSig 或 sequence")
+        offset += script_length
+        sequences.append(int.from_bytes(raw[offset : offset + 4], "little"))
+        offset += 4
+    return sequences
+
+
+def is_replaceable_signed_transaction(signed_payload_hex: str) -> bool:
+    """检查原始交易是否显式 opt-in RBF。"""
+    try:
+        sequences = extract_input_sequences_from_raw_transaction(signed_payload_hex)
+    except ValueError:
+        return False
+    return any(sequence < 0xFFFFFFFE for sequence in sequences)

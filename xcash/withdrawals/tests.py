@@ -1165,6 +1165,174 @@ class WithdrawalReviewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         approve_mock.assert_called_once()
 
+    @patch("withdrawals.admin.BitcoinFeeBumpService.bump_withdrawal")
+    def test_bitcoin_fee_bump_admin_action_renders_otp_modal_when_session_expired(
+        self,
+        bump_mock,
+    ):
+        owner = User.objects.create(username="merchant-btc-fee-bump", is_staff=True)
+        owner.user_permissions.add(Permission.objects.get(codename="view_withdrawal"))
+        project = Project.objects.create(
+            name="BitcoinFeeBumpModalProject",
+            wallet=Wallet.objects.create(),
+        )
+        crypto = Crypto.objects.create(
+            name="Bitcoin Fee Bump Modal",
+            symbol="BTCFM",
+            coingecko_id="bitcoin-fee-bump-modal",
+            decimals=8,
+        )
+        chain = Chain.objects.create(
+            name="Bitcoin Fee Bump Modal",
+            code="btc-fee-bump-modal",
+            type=ChainType.BITCOIN,
+            native_coin=crypto,
+            rpc="http://bitcoin.local",
+            active=True,
+        )
+        vault = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.BITCOIN,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+        )
+        broadcast_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault,
+            transfer_type=TransferType.Withdrawal,
+            crypto=crypto,
+            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            amount=Decimal("0.01"),
+            tx_hash="1" * 64,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        withdrawal = Withdrawal.objects.create(
+            project=project,
+            out_no="btc-fee-bump-modal-order",
+            chain=chain,
+            crypto=crypto,
+            amount=Decimal("0.01"),
+            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            status=WithdrawalStatus.PENDING,
+            broadcast_task=broadcast_task,
+            hash=broadcast_task.tx_hash,
+        )
+        self._login_reviewer_with_expired_otp(owner)
+
+        response = self.client.post(
+            reverse("admin:withdrawals_withdrawal_changelist"),
+            {
+                "action": "bump_selected_bitcoin_withdrawal_fee",
+                "_selected_action": [withdrawal.pk],
+                "index": 0,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        bump_mock.assert_not_called()
+
+    @patch(
+        "withdrawals.admin.get_fresh_admin_approval_context",
+        return_value=build_admin_approval_context(source="test_fee_bump_action"),
+    )
+    @patch("withdrawals.admin.BitcoinFeeBumpService.bump_withdrawal")
+    def test_bitcoin_fee_bump_admin_action_rejects_multi_select(
+        self,
+        bump_mock,
+        _approval_context_mock,
+    ):
+        owner = User.objects.create(
+            username="merchant-btc-fee-bump-multi", is_staff=True
+        )
+        owner.user_permissions.add(Permission.objects.get(codename="view_withdrawal"))
+        self.client.force_login(owner)
+        project = Project.objects.create(
+            name="BitcoinFeeBumpMultiProject",
+            wallet=Wallet.objects.create(),
+        )
+        crypto = Crypto.objects.create(
+            name="Bitcoin Fee Bump Multi",
+            symbol="BTCMU",
+            coingecko_id="bitcoin-fee-bump-multi",
+            decimals=8,
+        )
+        chain = Chain.objects.create(
+            name="Bitcoin Fee Bump Multi",
+            code="btc-fee-bump-multi",
+            type=ChainType.BITCOIN,
+            native_coin=crypto,
+            rpc="http://bitcoin.local",
+            active=True,
+        )
+        vault = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.BITCOIN,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+        )
+        first_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault,
+            transfer_type=TransferType.Withdrawal,
+            crypto=crypto,
+            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            amount=Decimal("0.01"),
+            tx_hash="2" * 64,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        second_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault,
+            transfer_type=TransferType.Withdrawal,
+            crypto=crypto,
+            recipient="1KFHE7w8BhaENAswwryaoccDb6qcT6DbYY",
+            amount=Decimal("0.02"),
+            tx_hash="3" * 64,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        first = Withdrawal.objects.create(
+            project=project,
+            out_no="btc-fee-bump-first",
+            chain=chain,
+            crypto=crypto,
+            amount=Decimal("0.01"),
+            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            status=WithdrawalStatus.PENDING,
+            broadcast_task=first_task,
+            hash=first_task.tx_hash,
+        )
+        second = Withdrawal.objects.create(
+            project=project,
+            out_no="btc-fee-bump-second",
+            chain=chain,
+            crypto=crypto,
+            amount=Decimal("0.02"),
+            to="1KFHE7w8BhaENAswwryaoccDb6qcT6DbYY",
+            status=WithdrawalStatus.PENDING,
+            broadcast_task=second_task,
+            hash=second_task.tx_hash,
+        )
+
+        response = self.client.post(
+            reverse("admin:withdrawals_withdrawal_changelist"),
+            {
+                "action": "bump_selected_bitcoin_withdrawal_fee",
+                "_selected_action": [first.pk, second.pk],
+                "index": 0,
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        bump_mock.assert_not_called()
+
 
 @override_settings(
     SIGNER_BACKEND="remote",

@@ -33,8 +33,6 @@ from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
 from chains.models import r
-from chains.service import ObservedTransferPayload
-from chains.service import TransferService
 from chains.tasks import block_number_updated
 from chains.tasks import confirm_transfer
 from chains.tasks import update_the_latest_block
@@ -60,6 +58,8 @@ from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from evm.scanner.service import EvmChainScannerService
+from invoices.models import Invoice
+from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
 from users.models import Customer
@@ -1635,29 +1635,14 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
             TransferStatus.CONFIRMED,
         )
 
-        tx_info = wallet_client.get_raw_transaction(btc_task.base_task.tx_hash)
-        if tx_info is None:
-            self.fail("Bitcoin withdrawal transaction not found on regtest node")
-        block_hash = tx_info.get("blockhash")
-        if not block_hash:
-            self.fail("Bitcoin withdrawal transaction missing blockhash")
-        block = wallet_client.get_block(block_hash)
+        from bitcoin.tasks import scan_bitcoin_receipts
 
-        observed = ObservedTransferPayload(
+        scan_bitcoin_receipts.run()
+        transfer = OnchainTransfer.objects.filter(
             chain=chain,
-            block=int(block["height"]),
-            tx_hash=btc_task.base_task.tx_hash,
+            hash=btc_task.base_task.tx_hash,
             event_id="vout:0",
-            from_address=vault_address.address,
-            to_address=recipient,
-            crypto=crypto,
-            value=Decimal(int(amount * Decimal(10**8))),
-            amount=amount,
-            timestamp=int(tx_info.get("blocktime") or block.get("time") or 0),
-            occurred_at=timezone.now(),
-            source="bitcoin-local-withdrawal",
-        )
-        transfer = TransferService.create_observed_transfer(observed=observed).transfer
+        ).first()
         if transfer is None:
             self.fail("Bitcoin withdrawal observed transfer missing")
         transfer.process()
@@ -1669,3 +1654,89 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
         btc_task.base_task.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
         self.assertEqual(btc_task.base_task.result, BroadcastTaskResult.SUCCESS)
+
+    @patch.dict(environ, {"BITCOIN_NETWORK": "regtest"}, clear=False)
+    @patch("invoices.service.WebhookService.create_event")
+    @patch("chains.tasks.process_transfer.apply_async")
+    def test_local_bitcoin_invoice_payment_can_complete(
+        self,
+        _process_transfer_mock,
+        _create_event_mock,
+    ):
+        # 真实 regtest 联调：项目 BTC 收款地址收到付款后，
+        # 扫描、Invoice 命中、确认和 Completed 终局都必须打通。
+        wallet_client = self._require_bitcoin()
+        crypto = Crypto.objects.create(
+            name="Bitcoin Invoice Local",
+            symbol="BTCI",
+            coingecko_id="bitcoin-invoice-local",
+            decimals=8,
+            prices={"USD": "65000"},
+        )
+        chain = Chain.objects.create(
+            name="Bitcoin Local Invoice",
+            code="bitcoin-local-invoice",
+            type=ChainType.BITCOIN,
+            native_coin=crypto,
+            rpc=self.BTC_RPC,
+            active=True,
+            confirm_block_count=1,
+        )
+        project = Project.objects.create(
+            name="Local BTC Invoice Project",
+            wallet=Wallet.generate(),
+        )
+        ensure_base_currencies()
+        recipient = RecipientAddress.objects.create(
+            name="BTC Invoice Recipient",
+            project=project,
+            chain_type=ChainType.BITCOIN,
+            address=wallet_client.get_new_address(
+                label="btc-invoice-recipient",
+                address_type="legacy",
+            ),
+            used_for_invoice=True,
+            used_for_deposit=False,
+        )
+        invoice = Invoice.objects.create(
+            project=project,
+            out_no="local-btc-invoice-order",
+            title="Local BTC Invoice",
+            currency=crypto.symbol,
+            amount=Decimal("0.012"),
+            methods={crypto.symbol: [chain.code]},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        invoice.select_method(crypto, chain)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.pay_address, recipient.address)
+        self.assertEqual(invoice.pay_amount, Decimal("0.012"))
+
+        call_command(
+            "prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101"
+        )
+        tx_hash = wallet_client.send_to_address(invoice.pay_address, invoice.pay_amount)
+        mining_address = wallet_client.get_new_address(
+            label="btc-invoice-miner",
+            address_type="legacy",
+        )
+        wallet_client.generate_to_address(1, mining_address)
+
+        from bitcoin.tasks import scan_bitcoin_receipts
+
+        scan_bitcoin_receipts.run()
+
+        transfer = OnchainTransfer.objects.get(
+            chain=chain,
+            hash=tx_hash,
+            to_address=invoice.pay_address,
+        )
+        transfer.process()
+        invoice.refresh_from_db()
+        self.assertEqual(transfer.type, TransferType.Invoice)
+        self.assertEqual(invoice.status, InvoiceStatus.CONFIRMING)
+        self.assertEqual(invoice.transfer_id, transfer.pk)
+
+        transfer.confirm()
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceStatus.COMPLETED)
