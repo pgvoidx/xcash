@@ -405,42 +405,14 @@ class SignerWalletSignPolicyTests(TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-    @patch("wallets.views.compute_txid", return_value="ab" * 32)
-    @patch("wallets.views.SignBitcoinView._load_bit_dependencies")
-    def test_bitcoin_sign_endpoint_passes_replaceable_flag_to_bit_library(
+    @patch("wallets.views.SignBitcoinView._build_and_sign_segwit_tx")
+    def test_bitcoin_sign_endpoint_passes_replaceable_flag(
         self,
-        load_bit_dependencies_mock,
-        _compute_txid_mock,
+        build_tx_mock,
     ):
+        build_tx_mock.return_value = ("ab" * 32, "00" * 100)
+
         wallet = self._create_wallet(wallet_id=3004)
-        create_transaction_kwargs = {}
-
-        class DummyUnspent:
-            def __init__(
-                self,
-                *,
-                amount,
-                confirmations,
-                script,
-                txid,
-                txindex,
-                type="p2pkh",
-            ):
-                self.amount = amount
-                self.confirmations = confirmations
-                self.script = script
-                self.txid = txid
-                self.txindex = txindex
-
-        class DummyKey:
-            def __init__(self, _wif):
-                self.unspents = []
-
-            def create_transaction(self, **kwargs):
-                create_transaction_kwargs.update(kwargs)
-                return "00"
-
-        load_bit_dependencies_mock.return_value = (DummyKey, DummyUnspent)
         recipient = wallet.derive_address(
             chain_type=ChainType.BITCOIN,
             bip44_account=0,
@@ -460,7 +432,9 @@ class SignerWalletSignPolicyTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(create_transaction_kwargs.get("replace_by_fee"))
+        call_kwargs = build_tx_mock.call_args.kwargs
+        self.assertTrue(call_kwargs["replaceable"])
+        self.assertEqual(call_kwargs["to"], recipient)
 
 
 @override_settings(
