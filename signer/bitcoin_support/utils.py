@@ -58,7 +58,25 @@ def is_valid_bitcoin_address(address: str) -> bool:
 
 
 def compute_txid(signed_payload_hex: str) -> str:
-    """从已签名原始交易 hex 计算 txid。"""
-    tx_bytes = bytes.fromhex(signed_payload_hex)
-    txid_bytes = hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()
-    return txid_bytes[::-1].hex()
+    """从已签名原始交易 hex 计算 txid。
+
+    SegWit 交易的 txid 基于去除 witness 数据后的序列化，
+    使用 bit.transaction.calc_txid 正确处理 legacy 和 SegWit 两种格式。
+    """
+    from bit.transaction import calc_txid
+
+    return calc_txid(signed_payload_hex)
+
+
+def classify_bitcoin_address(address: str) -> str:
+    """识别 Bitcoin 地址类型，返回 'p2pkh' / 'p2sh' / 'p2wpkh' / 'unknown'。"""
+    if not address:
+        return "unknown"
+    lower = address.lower()
+    if lower.startswith(("bc1q", "tb1q", "bcrt1q")):
+        return "p2wpkh"
+    if address[0] in ("3", "2"):
+        return "p2sh"
+    if address[0] in ("1", "m", "n"):
+        return "p2pkh"
+    return "unknown"
