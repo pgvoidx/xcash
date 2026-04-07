@@ -428,8 +428,9 @@ class BitcoinUtxoSerializer(serializers.Serializer):
     script_pub_key = serializers.RegexField(r"^[0-9a-fA-F]+$", max_length=200)
 
 
-# P2PKH dust limit（546 satoshi），低于此值的输出会被全节点拒绝广播。
-_BTC_DUST_LIMIT = 546
+# P2WPKH dust limit（294 satoshi），低于此值的输出会被全节点拒绝广播。
+# P2WPKH 输出的 dust 阈值低于 P2PKH（546），因为 SegWit 输入花费成本更低。
+_BTC_DUST_LIMIT = 294
 
 
 class SignBitcoinSerializer(serializers.Serializer):
@@ -660,6 +661,7 @@ class SignBitcoinView(SignerAPIView):
                 script=utxo["script_pub_key"],
                 txid=utxo["txid"],
                 txindex=int(utxo["vout"]),
+                type="p2wkh",
             )
             for utxo in raw_utxos
         ]
