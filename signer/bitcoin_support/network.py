@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bip_utils import Bip44Coins
+from bip_utils import Bip84Coins
 from django.conf import settings
 
 
@@ -13,6 +14,7 @@ class BitcoinNetworkConfig:
     name: str
     wif_prefix: bytes
     bip44_coin: Bip44Coins
+    bip84_coin: Bip84Coins
     bit_private_key_class_name: str
 
 
@@ -21,6 +23,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         name="mainnet",
         wif_prefix=b"\x80",
         bip44_coin=Bip44Coins.BITCOIN,
+        bip84_coin=Bip84Coins.BITCOIN,
         bit_private_key_class_name="PrivateKey",
     ),
     # regtest / signet 继续沿用 testnet 的 WIF 与 BIP44 coin 语义。
@@ -28,18 +31,21 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         name="testnet",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_TESTNET,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
     "signet": BitcoinNetworkConfig(
         name="signet",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_TESTNET,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
     "regtest": BitcoinNetworkConfig(
         name="regtest",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_REGTEST,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
 }
