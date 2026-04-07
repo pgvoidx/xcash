@@ -534,11 +534,11 @@ class DepositService:
         if chain.type == ChainType.BITCOIN:
             # Bitcoin 归集原生币时，schedule_transfer 内部会从 amount 中额外扣除矿工费，
             # 传入全额余额会导致 select_utxos_for_amount 因 amount + fee > total 而失败。
-            # 这里按保守的 1 输入 2 输出 P2PKH 交易体积 × 默认费率预留 fee 空间。
+            # 这里按保守的 1 输入 2 输出 P2WPKH 交易体积 × 默认费率预留 fee 空间。
             from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-            from bitcoin.constants import BTC_P2PKH_TX_BYTES
+            from bitcoin.constants import BTC_P2WPKH_TX_VBYTES
 
-            return BTC_P2PKH_TX_BYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
+            return BTC_P2WPKH_TX_VBYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
 
         # 防御性兜底：当前系统只支持 EVM / Bitcoin；若出现异常链类型，返回 0 避免归集流程直接崩溃。
         return 0

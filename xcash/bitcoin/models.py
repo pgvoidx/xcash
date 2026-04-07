@@ -25,6 +25,7 @@ from chains.models import BroadcastTaskStage
 from chains.models import TransferType
 from chains.signer import get_signer_backend
 from common.models import UndeletableModel
+from common.utils.bitcoin import classify_bitcoin_address
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -290,10 +291,10 @@ class BitcoinBroadcastTask(UndeletableModel):
         verify_fn: Callable[[], None] | None = None,
         sweep: bool = False,
     ) -> BitcoinBroadcastTask:
-        """构建并签名 Bitcoin P2PKH 交易，原子写入 DB。
+        """构建并签名 Bitcoin SegWit (P2WPKH) 交易，原子写入 DB。
 
-        原实现按固定 1 输入 2 输出估算费用，UTXO 一旦拆分就会低估矿工费。
-        这里先选 UTXO，再按实际输入数保守估算手续费，避免广播时因 fee 不足失败。
+        内部地址统一为 Native SegWit，外部目标地址可为任意类型 (P2PKH/P2SH/P2WPKH)。
+        估费时根据目标地址类型动态计算输出体积，避免广播时因 fee 不足失败。
         """
         ensure_bitcoin_native_currency(chain=chain, crypto=crypto)
 
@@ -326,9 +327,11 @@ class BitcoinBroadcastTask(UndeletableModel):
             )
             if sweep:
                 # sweep 直接基于当前全部可用 UTXO 计算净额，避免归集时先猜金额再被实际手续费打回。
+                target_address_type = classify_bitcoin_address(to)
                 selected_utxos, amount_satoshi, fee_satoshi = select_utxos_for_sweep(
                     utxos=raw_utxos,
                     fee_rate_sat_per_byte=fee_rate_sat_per_byte,
+                    target_address_type=target_address_type,
                 )
                 amount = Decimal(amount_satoshi).scaleb(-8)
             else:
@@ -341,10 +344,12 @@ class BitcoinBroadcastTask(UndeletableModel):
                 # 1. 先从节点返回的 UTXO 中挑出一组输入；
                 # 2. 按输入数保守估算 2 输出（收款 + 找零）的手续费；
                 # 3. 再把同一组输入交给 bit 构建交易，避免"估费与选币不一致"。
+                target_address_type = classify_bitcoin_address(to)
                 selected_utxos, fee_satoshi = select_utxos_for_amount(
                     utxos=raw_utxos,
                     amount_satoshi=amount_satoshi,
                     fee_rate_sat_per_byte=fee_rate_sat_per_byte,
+                    target_address_type=target_address_type,
                 )
 
             signer_result = get_signer_backend().sign_bitcoin_transaction(

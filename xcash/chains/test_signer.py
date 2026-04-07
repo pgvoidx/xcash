@@ -7,6 +7,8 @@ from bip_utils import Bip39SeedGenerator
 from bip_utils import Bip44
 from bip_utils import Bip44Changes
 from bip_utils import Bip44Coins
+from bip_utils import Bip84
+from bip_utils import Bip84Coins
 from web3 import Web3
 
 from bitcoin.network import get_active_bitcoin_network
@@ -74,6 +76,12 @@ class TestRemoteSignerBackend:
             return get_active_bitcoin_network().bip44_coin
         raise NotImplementedError(f"unsupported chain_type={chain_type}")
 
+    @staticmethod
+    def _bip84_coin(chain_type: str) -> Bip84Coins:
+        if chain_type == ChainType.BITCOIN:
+            return get_active_bitcoin_network().bip84_coin
+        raise NotImplementedError(f"BIP84 不支持 chain_type={chain_type}")
+
     def _wallet_passphrase(self, *, wallet_id: int) -> str:
         # 真实 signer 是“每个钱包一份独立密钥材料”；测试假体用 run salt + wallet slot 模拟这个边界，
         # 既避免同一测试进程内 wallet_id 复用，也避免多次跑测试时复用历史链上 nonce。
@@ -83,10 +91,25 @@ class TestRemoteSignerBackend:
     def _account_ctx(
         self, *, wallet_id: int, chain_type: str, bip44_account: int, address_index: int
     ):
-        """派生 BIP44 完整叶子节点：m/44'/coin'/bip44_account'/0/address_index，与 signer 保持一致。"""
+        """派生 HD 钱包完整叶子节点，与 signer 保持一致。
+
+        EVM: BIP44 路径 m/44'/coin'/bip44_account'/0/address_index
+        Bitcoin: BIP84 路径 m/84'/coin'/bip44_account'/0/address_index
+        """
         seed_bytes = Bip39SeedGenerator(TEST_SIGNER_MNEMONIC).Generate(
             self._wallet_passphrase(wallet_id=wallet_id)
         )
+
+        if chain_type == ChainType.BITCOIN:
+            return (
+                Bip84.FromSeed(seed_bytes, self._bip84_coin(chain_type))
+                .Purpose()
+                .Coin()
+                .Account(bip44_account)
+                .Change(Bip44Changes.CHAIN_EXT)
+                .AddressIndex(address_index)
+            )
+
         return (
             Bip44.FromSeed(seed_bytes, self._coin(chain_type))
             .Purpose()
@@ -171,6 +194,7 @@ class TestRemoteSignerBackend:
                 script=utxo.get("scriptPubKey") or utxo.get("script_pub_key"),
                 txid=utxo["txid"],
                 txindex=int(utxo["vout"]),
+                type="p2wkh",
             )
             for utxo in utxos
         ]

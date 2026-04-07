@@ -9,12 +9,13 @@ from bitcoin.models import BitcoinBroadcastTask
 from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
 from bitcoin.utils import btc_to_satoshi
-from bitcoin.utils import estimate_p2pkh_tx_vbytes
+from bitcoin.utils import estimate_segwit_tx_vbytes
 from chains.models import AddressChainState
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import TransferType
 from chains.signer import get_signer_backend
+from common.utils.bitcoin import classify_bitcoin_address
 from users.otp import validate_admin_sensitive_action_context
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalStatus
@@ -69,6 +70,7 @@ class BitcoinFeeBumpService:
             input_count=len(reserved_utxos),
             old_fee_satoshi=bitcoin_task.fee_satoshi,
             fee_rate_btc_per_kb=client.estimate_smart_fee(),
+            target_address_type=classify_bitcoin_address(str(base_task.recipient)),
         )
         amount_satoshi = btc_to_satoshi(withdrawal.amount)
         total_input_satoshi = sum(
@@ -158,10 +160,15 @@ class BitcoinFeeBumpService:
         input_count: int,
         old_fee_satoshi: int,
         fee_rate_btc_per_kb: Decimal,
+        target_address_type: str = "p2wpkh",
     ) -> int:
         from bitcoin.utils import sat_per_byte_from_btc_per_kb
 
-        tx_vbytes = estimate_p2pkh_tx_vbytes(input_count=input_count, output_count=2)
+        tx_vbytes = estimate_segwit_tx_vbytes(
+            input_count=input_count,
+            target_address_type=target_address_type,
+            include_change=True,
+        )
         current_target_fee = (
             tx_vbytes * sat_per_byte_from_btc_per_kb(fee_rate_btc_per_kb)
         )
