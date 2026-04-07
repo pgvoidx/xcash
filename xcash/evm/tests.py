@@ -1,5 +1,6 @@
 import importlib
 import os
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -9,7 +10,10 @@ from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
 from django.core.cache import cache
+from django.db import connections
+from django.db import close_old_connections
 from django.test import TestCase
+from django.test import TransactionTestCase
 from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
@@ -809,9 +813,6 @@ class EvmChainScannerServiceTests(TestCase):
                 "0x00000000000000000000000000000000000000f1"
             ),
         )
-        addr.get_lock = Mock(return_value=True)
-        addr.release_lock = Mock()
-
         task = EvmBroadcastTask.schedule_transfer(
             address=addr,
             chain=chain,
@@ -891,12 +892,8 @@ class EvmChainScannerServiceTests(TestCase):
         self.assertEqual(task.gas_price, 9)
 
     @patch("evm.models.get_signer_backend")
-    @patch("chains.models.Address.get_lock", return_value=True)
-    @patch("chains.models.Address.release_lock")
     def test_schedule_transfer_uses_next_nonce_after_highest_existing_nonce(
         self,
-        _release_lock_mock,
-        _get_lock_mock,
         get_signer_backend_mock,
     ):
         native = Crypto.objects.create(
@@ -966,58 +963,6 @@ class EvmChainScannerServiceTests(TestCase):
         )
 
         self.assertEqual(task.nonce, 6)
-
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
-    @patch("chains.models.Address.release_lock")
-    @patch(
-        "chains.models.Address.get_lock",
-        side_effect=AssertionError("redis address lock should not be used"),
-    )
-    def test_schedule_transfer_no_longer_depends_on_redis_address_lock(
-        self,
-        _get_lock_mock,
-        _release_lock_mock,
-        _next_nonce_mock,
-    ):
-        native = Crypto.objects.create(
-            name="Ethereum DB Lock",
-            symbol="ETHDBL",
-            coingecko_id="ethereum-db-lock",
-        )
-        chain = Chain.objects.create(
-            code="eth-dblock",
-            name="Ethereum DB Lock",
-            type=ChainType.EVM,
-            chain_id=2,
-            rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
-        )
-        wallet = Wallet.objects.create()
-        addr = Address.objects.create(
-            wallet=wallet,
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-            bip44_account=1,
-            address_index=0,
-            address=Web3.to_checksum_address(
-                "0x00000000000000000000000000000000000000f3"
-            ),
-        )
-        chain.__dict__["w3"] = SimpleNamespace(eth=SimpleNamespace(gas_price=9))
-
-        task = EvmBroadcastTask.schedule_transfer(
-            address=addr,
-            chain=chain,
-            crypto=native,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f4"),
-            value_raw=123,
-            transfer_type=TransferType.Withdrawal,
-        )
-
-        self.assertEqual(task.nonce, 0)
-        self.assertEqual(task.signed_payload, "")
-        self.assertIsNone(task.base_task.tx_hash)
 
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch("evm.models.AddressChainState.acquire_for_update")
@@ -2551,3 +2496,147 @@ class EvmAdapterTests(TestCase):
 
         result = EvmAdapter.tx_result(chain, "0x" + "ab" * 32)
         self.assertIsInstance(result, ConnectionError)
+
+
+class EvmNonceConcurrencyTests(TransactionTestCase):
+    """多线程并发创建 EvmBroadcastTask，验证 nonce 分配的严格递增和互斥性。
+
+    EVM 的 schedule_native → _create_broadcast_task 只做 nonce 分配和 DB 写入，
+    不涉及 signer 或 RPC，因此无需 mock 外部依赖。
+    """
+
+    THREAD_COUNT = 5
+
+    def setUp(self):
+        self.native = Crypto.objects.create(
+            name="Ethereum Concurrency",
+            symbol="ETHCC",
+            coingecko_id="ethereum-concurrency",
+        )
+        self.chain = Chain.objects.create(
+            code="eth-concurrency",
+            name="Ethereum Concurrency",
+            type=ChainType.EVM,
+            chain_id=99901,
+            rpc="http://localhost:8545",
+            native_coin=self.native,
+            active=True,
+            base_transfer_gas=21_000,
+        )
+        self.wallet = Wallet.objects.create()
+        self.address = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000CC01"
+            ),
+        )
+
+    def test_concurrent_schedule_native_assigns_unique_sequential_nonces(self):
+        """同一 (address, chain) 上 N 个线程同时 schedule_native，nonce 必须为 {0..N-1}。"""
+        barrier = threading.Barrier(self.THREAD_COUNT)
+        results: list[int] = []
+        errors: list[Exception] = []
+        recipient = Web3.to_checksum_address(
+            "0x000000000000000000000000000000000000CC02"
+        )
+
+        def schedule(thread_idx: int) -> None:
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                task = EvmBroadcastTask.schedule_native(
+                    address=self.address,
+                    chain=self.chain,
+                    to=recipient,
+                    value=thread_idx + 1,
+                    transfer_type=TransferType.Withdrawal,
+                )
+                results.append(task.nonce)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=schedule, args=(i,))
+            for i in range(self.THREAD_COUNT)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"线程异常: {errors}")
+        self.assertEqual(len(results), self.THREAD_COUNT)
+        self.assertEqual(sorted(results), list(range(self.THREAD_COUNT)))
+
+        from chains.models import AddressChainState
+
+        state = AddressChainState.objects.get(
+            address=self.address, chain=self.chain
+        )
+        self.assertEqual(state.next_nonce, self.THREAD_COUNT)
+        self.assertEqual(
+            EvmBroadcastTask.objects.filter(
+                address=self.address, chain=self.chain
+            ).count(),
+            self.THREAD_COUNT,
+        )
+
+    def test_concurrent_schedule_native_across_addresses_are_independent(self):
+        """不同地址并发 schedule，各自 nonce 独立从 0 开始。"""
+        addresses = []
+        for i in range(self.THREAD_COUNT):
+            addr = Address.objects.create(
+                wallet=self.wallet,
+                chain_type=ChainType.EVM,
+                usage=AddressUsage.Vault,
+                bip44_account=1,
+                address_index=100 + i,
+                address=Web3.to_checksum_address(
+                    f"0x000000000000000000000000000000000000D{i:03d}"
+                ),
+            )
+            addresses.append(addr)
+
+        barrier = threading.Barrier(self.THREAD_COUNT)
+        results: list[tuple[str, int]] = []
+        errors: list[Exception] = []
+        recipient = Web3.to_checksum_address(
+            "0x000000000000000000000000000000000000CC02"
+        )
+
+        def schedule(addr: Address) -> None:
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                task = EvmBroadcastTask.schedule_native(
+                    address=addr,
+                    chain=self.chain,
+                    to=recipient,
+                    value=1,
+                    transfer_type=TransferType.Withdrawal,
+                )
+                results.append((str(addr.address), task.nonce))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=schedule, args=(addr,))
+            for addr in addresses
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"线程异常: {errors}")
+        self.assertEqual(len(results), self.THREAD_COUNT)
+        for _addr_str, nonce in results:
+            self.assertEqual(nonce, 0)

@@ -1,3 +1,4 @@
+import threading
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -5,8 +6,11 @@ from unittest.mock import PropertyMock
 from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
+from django.db import connections
+from django.db import close_old_connections
 from django.test import SimpleTestCase
 from django.test import TestCase
+from django.test import TransactionTestCase
 from django.utils import timezone
 
 from bitcoin.adapter import BitcoinAdapter
@@ -30,7 +34,7 @@ from chains.models import OnchainTransfer
 from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
-from chains.models import r
+from django.core.cache import cache as _cache
 from chains.test_signer import build_test_remote_signer_backend
 from currencies.models import Crypto
 from deposits.models import Deposit
@@ -50,7 +54,7 @@ _BITCOIN_TEST_PATCHERS = []
 
 def setUpModule():
     # 测试前先清空 Redis 锁，避免前一轮联调残留的账户锁污染当前 signer 回归。
-    r.flushdb()
+    _cache.clear()
     backend = build_test_remote_signer_backend()
     # Bitcoin 测试仍然走“主应用调用 signer”的链路，只是把远端容器替换成进程内假体。
     for target in (
@@ -65,7 +69,7 @@ def setUpModule():
 def tearDownModule():
     while _BITCOIN_TEST_PATCHERS:
         _BITCOIN_TEST_PATCHERS.pop().stop()
-    r.flushdb()
+    _cache.clear()
 
 
 class BitcoinRpcClientTests(SimpleTestCase):
@@ -865,12 +869,8 @@ class BitcoinReservedUtxoTests(TestCase):
         return_value=Decimal("0.0001"),
     )
     @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    @patch("chains.models.Address.release_lock")
-    @patch("chains.models.Address.get_lock", return_value=True)
     def test_schedule_transfer_excludes_reserved_utxo_and_reserves_selected_input(
         self,
-        _get_lock_mock,
-        _release_lock_mock,
         list_unspent_mock,
         _estimate_fee_mock,
         get_signer_backend_mock,
@@ -1003,12 +1003,8 @@ class BitcoinReservedUtxoTests(TestCase):
         return_value=Decimal("0.0001"),
     )
     @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    @patch("chains.models.Address.release_lock")
-    @patch("chains.models.Address.get_lock", return_value=True)
     def test_second_schedule_transfer_is_blocked_by_db_reserved_utxo_boundary(
         self,
-        _get_lock_mock,
-        _release_lock_mock,
         list_unspent_mock,
         _estimate_fee_mock,
         get_signer_backend_mock,
@@ -1052,61 +1048,6 @@ class BitcoinReservedUtxoTests(TestCase):
                 amount=Decimal("0.25"),
                 transfer_type=TransferType.Withdrawal,
             )
-
-    @patch(
-        "bitcoin.models.select_utxos_for_amount",
-        side_effect=lambda **kwargs: (kwargs["utxos"], 120),
-    )
-    @patch("bitcoin.models.get_signer_backend")
-    @patch(
-        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0001"),
-    )
-    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    @patch("chains.models.Address.release_lock")
-    @patch(
-        "chains.models.Address.get_lock",
-        side_effect=AssertionError("redis address lock should not be used"),
-    )
-    def test_schedule_transfer_no_longer_depends_on_redis_address_lock(
-        self,
-        _get_lock_mock,
-        _release_lock_mock,
-        list_unspent_mock,
-        _estimate_fee_mock,
-        get_signer_backend_mock,
-        _select_utxos_mock,
-    ):
-        list_unspent_mock.return_value = [
-            {
-                "txid": "utxo-db-lock",
-                "vout": 0,
-                "amount": "1.0",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            }
-        ]
-        signer_backend = SimpleNamespace(
-            sign_bitcoin_transaction=Mock(
-                return_value=SimpleNamespace(
-                    txid="e" * 64,
-                    signed_payload="signed-payload",
-                )
-            )
-        )
-        get_signer_backend_mock.return_value = signer_backend
-
-        task = BitcoinBroadcastTask.schedule_transfer(
-            address=self.address,
-            chain=self.chain,
-            crypto=self.native,
-            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.25"),
-            transfer_type=TransferType.Withdrawal,
-        )
-
-        self.assertEqual(task.base_task.tx_hash, "e" * 64)
-        signer_backend.sign_bitcoin_transaction.assert_called_once()
 
     @patch("bitcoin.models.BitcoinRpcClient.send_raw_transaction")
     def test_broadcast_missing_utxo_marks_withdrawal_failed(
@@ -1479,3 +1420,208 @@ class BitcoinFeeBumpTests(TestCase):
         self.assertEqual(task.base_task.tx_hash, "66" * 32)
         self.assertEqual(task.base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(task.base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+
+
+class BitcoinUtxoConcurrencyTests(TransactionTestCase):
+    """多线程并发创建 BitcoinBroadcastTask，验证 UTXO 预留的互斥性。
+
+    Bitcoin 的 schedule_transfer 在原子事务内调用 RPC 和 signer，
+    需要 mock 掉 BitcoinRpcClient 和 signer（module-level 已 patch）。
+    """
+
+    THREAD_COUNT = 5
+
+    def setUp(self):
+        self.wallet = Wallet.generate()
+        self.project = Project.objects.create(
+            name="btc-concurrency-project",
+            wallet=self.wallet,
+        )
+        self.native = Crypto.objects.create(
+            name="Bitcoin Concurrency",
+            symbol="BTCCC",
+            coingecko_id="bitcoin-concurrency",
+            decimals=8,
+        )
+        self.chain = Chain.objects.create(
+            code="btc-concurrency",
+            name="Bitcoin Concurrency",
+            type=ChainType.BITCOIN,
+            rpc="http://bitcoin.local",
+            native_coin=self.native,
+            active=True,
+            confirm_block_count=1,
+        )
+        self.address = self.wallet.get_address(
+            chain_type=ChainType.BITCOIN,
+            usage=AddressUsage.Vault,
+        )
+
+    @staticmethod
+    def _make_mock_signer():
+        """返回一个线程安全的 mock signer，每次调用产生唯一 txid。"""
+        import itertools
+
+        counter = itertools.count()
+
+        def sign_bitcoin_transaction(**kwargs):
+            idx = next(counter)
+            return SimpleNamespace(
+                txid=f"{idx:0>2x}" * 32,
+                signed_payload=f"signed-payload-{idx}",
+            )
+
+        return SimpleNamespace(
+            sign_bitcoin_transaction=sign_bitcoin_transaction,
+        )
+
+    @patch("bitcoin.models.get_signer_backend")
+    @patch("bitcoin.models.select_utxos_for_amount")
+    @patch(
+        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
+        return_value=Decimal("0.0001"),
+    )
+    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
+    def test_concurrent_schedule_transfer_with_single_utxo_only_one_succeeds(
+        self,
+        list_unspent_mock,
+        _estimate_fee_mock,
+        select_utxos_mock,
+        get_signer_mock,
+    ):
+        """同一个 UTXO 被 N 个线程争抢，只有 1 个能成功预留。"""
+        get_signer_mock.return_value = self._make_mock_signer()
+        list_unspent_mock.return_value = [
+            {
+                "txid": "aa" * 32,
+                "vout": 0,
+                "amount": "1.0",
+                "confirmations": 10,
+                "scriptPubKey": "76a914",
+            }
+        ]
+        select_utxos_mock.side_effect = lambda **kwargs: (kwargs["utxos"], 120)
+
+        barrier = threading.Barrier(self.THREAD_COUNT)
+        successes: list[int] = []
+        value_errors: list[ValueError] = []
+        other_errors: list[Exception] = []
+
+        def schedule(thread_idx: int) -> None:
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                task = BitcoinBroadcastTask.schedule_transfer(
+                    address=self.address,
+                    chain=self.chain,
+                    crypto=self.native,
+                    to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+                    amount=Decimal("0.1"),
+                    transfer_type=TransferType.Withdrawal,
+                )
+                successes.append(task.pk)
+            except ValueError as exc:
+                value_errors.append(exc)
+            except Exception as exc:
+                other_errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=schedule, args=(i,))
+            for i in range(self.THREAD_COUNT)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(other_errors, f"非预期异常: {other_errors}")
+        self.assertEqual(len(successes), 1, f"只应有 1 个线程成功, value_errors={[str(e) for e in value_errors]}")
+        self.assertEqual(
+            len(value_errors),
+            self.THREAD_COUNT - 1,
+            f"应有 {self.THREAD_COUNT - 1} 个线程因无可用 UTXO 失败",
+        )
+        self.assertEqual(BitcoinBroadcastTask.objects.count(), 1)
+        self.assertEqual(
+            BitcoinReservedUtxo.objects.filter(released_at__isnull=True).count(),
+            1,
+        )
+
+    @patch("bitcoin.models.get_signer_backend")
+    @patch("bitcoin.models.select_utxos_for_amount")
+    @patch(
+        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
+        return_value=Decimal("0.0001"),
+    )
+    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
+    def test_concurrent_schedule_transfer_with_sufficient_utxos_all_succeed(
+        self,
+        list_unspent_mock,
+        _estimate_fee_mock,
+        select_utxos_mock,
+        get_signer_mock,
+    ):
+        """N 个可用 UTXO 被 N 个线程并发消费，每个线程各占一个，全部成功。"""
+        get_signer_mock.return_value = self._make_mock_signer()
+        all_utxos = [
+            {
+                "txid": f"{i:0>2x}" * 32,
+                "vout": 0,
+                "amount": "1.0",
+                "confirmations": 10,
+                "scriptPubKey": "76a914",
+            }
+            for i in range(self.THREAD_COUNT)
+        ]
+        list_unspent_mock.return_value = all_utxos
+        # 每次选币都取传入列表的第一个（行锁串行化后，已预留的会被 exclude_reserved 过滤掉）
+        select_utxos_mock.side_effect = lambda **kwargs: (
+            kwargs["utxos"][:1],
+            120,
+        )
+
+        barrier = threading.Barrier(self.THREAD_COUNT)
+        successes: list[int] = []
+        errors: list[Exception] = []
+
+        def schedule(thread_idx: int) -> None:
+            close_old_connections()
+            try:
+                barrier.wait(timeout=5)
+                task = BitcoinBroadcastTask.schedule_transfer(
+                    address=self.address,
+                    chain=self.chain,
+                    crypto=self.native,
+                    to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+                    amount=Decimal("0.1"),
+                    transfer_type=TransferType.Withdrawal,
+                )
+                successes.append(task.pk)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        threads = [
+            threading.Thread(target=schedule, args=(i,))
+            for i in range(self.THREAD_COUNT)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertFalse(errors, f"线程异常: {errors}")
+        self.assertEqual(len(successes), self.THREAD_COUNT)
+        self.assertEqual(BitcoinBroadcastTask.objects.count(), self.THREAD_COUNT)
+
+        # 所有活跃预留的 (txid, vout) 必须互不重复
+        reserved = list(
+            BitcoinReservedUtxo.objects.filter(
+                released_at__isnull=True,
+            ).values_list("txid", "vout")
+        )
+        self.assertEqual(len(reserved), self.THREAD_COUNT)
+        self.assertEqual(len(set(reserved)), self.THREAD_COUNT)
