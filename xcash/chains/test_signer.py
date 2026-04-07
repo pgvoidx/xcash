@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from importlib import import_module
 from uuid import uuid4
 
 from bip_utils import Bip39SeedGenerator
@@ -13,8 +12,6 @@ from web3 import Web3
 
 from bitcoin.network import get_active_bitcoin_network
 from bitcoin.utils import btc_to_satoshi
-from bitcoin.utils import compute_txid
-from bitcoin.utils import privkey_bytes_to_wif
 from chains.models import ChainType
 from chains.signer import BitcoinSignedPayload
 from chains.signer import EvmSignedPayload
@@ -166,14 +163,6 @@ class TestRemoteSignerBackend:
             raw_transaction=self._normalize_hex(signed.raw_transaction.hex()).lower(),
         )
 
-    @staticmethod
-    def _load_bit_dependencies():
-        bit_module = import_module("bit")
-        network = get_active_bitcoin_network()
-        private_key_cls = getattr(bit_module, network.bit_private_key_class_name)
-        bit_unspent = import_module("bit.wallet").Unspent
-        return private_key_cls, bit_unspent
-
     def sign_bitcoin_transaction(
         self,
         *,
@@ -186,18 +175,44 @@ class TestRemoteSignerBackend:
         replaceable: bool,
         utxos: list[dict],
     ) -> BitcoinSignedPayload:
-        private_key_cls, bit_unspent = self._load_bit_dependencies()
-        bit_utxos = [
-            bit_unspent(
-                amount=btc_to_satoshi(utxo["amount"]),
-                confirmations=int(utxo.get("confirmations", 0)),
-                script=utxo.get("scriptPubKey") or utxo.get("script_pub_key"),
-                txid=utxo["txid"],
-                txindex=int(utxo["vout"]),
-                type="p2wkh",
-            )
+        from bitcoinutils.keys import P2pkhAddress
+        from bitcoinutils.keys import P2shAddress
+        from bitcoinutils.keys import P2wpkhAddress
+        from bitcoinutils.keys import PrivateKey
+        from bitcoinutils.transactions import Transaction
+        from bitcoinutils.transactions import TxInput
+        from bitcoinutils.transactions import TxOutput
+        from bitcoinutils.transactions import TxWitnessInput
+        from common.utils.bitcoin import classify_bitcoin_address
+
+        # 构造输入
+        sequence = b"\xfd\xff\xff\xff" if replaceable else b"\xfe\xff\xff\xff"
+        inputs = [
+            TxInput(utxo["txid"], int(utxo["vout"]), sequence=sequence)
             for utxo in utxos
         ]
+
+        # 构造目标输出
+        addr_type = classify_bitcoin_address(to)
+        if addr_type == "p2wpkh":
+            target_script = P2wpkhAddress(to).to_script_pub_key()
+        elif addr_type == "p2sh":
+            target_script = P2shAddress(to).to_script_pub_key()
+        else:
+            target_script = P2pkhAddress(to).to_script_pub_key()
+        outputs = [TxOutput(amount_satoshi, target_script)]
+
+        # 找零
+        total_input = sum(btc_to_satoshi(utxo["amount"]) for utxo in utxos)
+        change = total_input - amount_satoshi - fee_satoshi
+        if change > 294:  # P2WPKH dust limit
+            change_script = P2wpkhAddress(source_address).to_script_pub_key()
+            outputs.append(TxOutput(change, change_script))
+
+        # 构建交易
+        tx = Transaction(inputs, outputs, has_segwit=True)
+
+        # 签名
         privkey_bytes = bytes.fromhex(
             self._private_key_hex(
                 wallet_id=address.wallet_id,
@@ -206,19 +221,19 @@ class TestRemoteSignerBackend:
                 address_index=address.address_index,
             )
         )
-        key = private_key_cls(privkey_bytes_to_wif(privkey_bytes))
-        key.unspents = bit_utxos  # type: ignore[attr-defined]
-        signed_payload = key.create_transaction(  # type: ignore[attr-defined]
-            outputs=[(to, amount_satoshi, "satoshi")],
-            fee=fee_satoshi,
-            absolute_fee=True,
-            leftover=source_address,
-            unspents=bit_utxos,
-            replace_by_fee=replaceable,
-        )
+        secret_exponent = int.from_bytes(privkey_bytes, byteorder="big")
+        key = PrivateKey(secret_exponent=secret_exponent)
+        pub = key.get_public_key()
+        script_code = pub.get_address().to_script_pub_key()
+
+        for i, utxo in enumerate(utxos):
+            utxo_amount = btc_to_satoshi(utxo["amount"])
+            sig = key.sign_segwit_input(tx, i, script_code, utxo_amount)
+            tx.witnesses.append(TxWitnessInput([sig, pub.to_hex()]))
+
         return BitcoinSignedPayload(
-            txid=compute_txid(signed_payload),
-            signed_payload=signed_payload,
+            txid=tx.get_txid(),
+            signed_payload=tx.serialize(),
         )
 
 
