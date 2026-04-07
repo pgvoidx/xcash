@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 from decimal import ROUND_DOWN
 from decimal import Decimal
 from typing import TYPE_CHECKING
-
-from bip_utils import Base58Encoder  # type: ignore[import]
 
 from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
 from bitcoin.constants import BTC_P2PKH_INPUT_VBYTES
@@ -16,7 +13,6 @@ from bitcoin.constants import BTC_P2WPKH_INPUT_VBYTES
 from bitcoin.constants import BTC_P2WPKH_OUTPUT_VBYTES
 from bitcoin.constants import BTC_SEGWIT_TX_OVERHEAD_VBYTES
 from bitcoin.constants import SATOSHI_PER_BTC
-from bitcoin.network import get_active_bitcoin_network
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -158,22 +154,24 @@ def select_utxos_for_sweep(
 
 
 def privkey_bytes_to_wif(privkey_bytes: bytes) -> str:
-    """将原始 32 字节 secp256k1 私钥转换为当前网络 WIF（压缩格式）。"""
-    network = get_active_bitcoin_network()
-    payload = network.wif_prefix + privkey_bytes + b"\x01"
-    checksum = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
-    return Base58Encoder.Encode(payload + checksum)
+    """将原始 32 字节 secp256k1 私钥转换为当前网络 WIF（压缩格式）。
+
+    依赖 bitcoinutils.setup.setup() 已在 AppConfig.ready() 中按当前网络初始化。
+    """
+    from bitcoinutils.keys import PrivateKey
+
+    secret_exponent = int.from_bytes(privkey_bytes, byteorder="big")
+    return PrivateKey(secret_exponent=secret_exponent).to_wif()
 
 
 def compute_txid(signed_payload_hex: str) -> str:
     """从已签名原始交易 hex 计算 txid。
 
-    SegWit 交易的 txid 基于去除 witness 数据后的序列化，
-    使用 bit.transaction.calc_txid 正确处理 legacy 和 SegWit 两种格式。
+    SegWit 交易的 txid 基于去除 witness 数据后的序列化。
     """
-    from bit.transaction import calc_txid
+    from bitcoinutils.transactions import Transaction
 
-    return calc_txid(signed_payload_hex)
+    return Transaction.from_raw(signed_payload_hex).get_txid()
 
 
 def _read_bitcoin_varint(raw: bytes, offset: int) -> tuple[int, int]:
