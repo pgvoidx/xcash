@@ -12,7 +12,7 @@ dependencies = [
     "hiredis==3.3.0",
     "web3==7.14.1",
     "bip-utils==2.9.3",
-    "bit>=0.8.0",
+    "bitcoin-utils==0.8.1",
     "cryptography==46.0.5",
     "psycopg[binary]==3.3.2",
 ]

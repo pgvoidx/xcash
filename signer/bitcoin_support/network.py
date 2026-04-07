@@ -15,7 +15,7 @@ class BitcoinNetworkConfig:
     wif_prefix: bytes
     bip44_coin: Bip44Coins
     bip84_coin: Bip84Coins
-    bit_private_key_class_name: str
+    bitcoinutils_network: str
 
 
 BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
@@ -24,7 +24,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\x80",
         bip44_coin=Bip44Coins.BITCOIN,
         bip84_coin=Bip84Coins.BITCOIN,
-        bit_private_key_class_name="PrivateKey",
+        bitcoinutils_network="mainnet",
     ),
     # regtest / signet 继续沿用 testnet 的 WIF 与 BIP44 coin 语义。
     "testnet": BitcoinNetworkConfig(
@@ -32,21 +32,21 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_TESTNET,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="testnet",
     ),
     "signet": BitcoinNetworkConfig(
         name="signet",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_TESTNET,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="testnet",
     ),
     "regtest": BitcoinNetworkConfig(
         name="regtest",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_REGTEST,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="regtest",
     ),
 }
 

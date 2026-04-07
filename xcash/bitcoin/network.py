@@ -20,7 +20,7 @@ class BitcoinNetworkConfig:
     wif_prefix: bytes
     bip44_coin: Bip44Coins
     bip84_coin: Bip84Coins
-    bit_private_key_class_name: str
+    bitcoinutils_network: str
 
 
 BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
@@ -32,7 +32,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\x80",
         bip44_coin=Bip44Coins.BITCOIN,
         bip84_coin=Bip84Coins.BITCOIN,
-        bit_private_key_class_name="PrivateKeyMainnet",
+        bitcoinutils_network="mainnet",
     ),
     # regtest / signet 沿用 testnet 的 base58/WIF 版本；bech32 HRP 则分别使用 bcrt / tb。
     "testnet": BitcoinNetworkConfig(
@@ -43,7 +43,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_TESTNET,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="testnet",
     ),
     "signet": BitcoinNetworkConfig(
         name="signet",
@@ -53,7 +53,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_TESTNET,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="testnet",
     ),
     "regtest": BitcoinNetworkConfig(
         name="regtest",
@@ -63,7 +63,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
         bip84_coin=Bip84Coins.BITCOIN_REGTEST,
-        bit_private_key_class_name="PrivateKeyTestnet",
+        bitcoinutils_network="regtest",
     ),
 }
 

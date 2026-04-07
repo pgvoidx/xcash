@@ -6,8 +6,8 @@ requires-python = "==3.13.*"
 dependencies = [
     "web3==7.14.1",
     "bip-utils==2.12.1",
-    # Bitcoin：P2PKH 交易构建、UTXO 选择与 secp256k1 签名
-    "bit>=0.8.0",
+    # Bitcoin：P2WPKH SegWit 交易构建与 secp256k1 签名
+    "bitcoin-utils==0.8.1",
     "redis==7.4.0",
     "hiredis==3.3.1",
     "cryptography==46.0.6",
