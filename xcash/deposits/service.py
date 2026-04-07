@@ -14,8 +14,6 @@ from chains.models import AddressUsage
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
-from common.consts import BASE_TRANSFER_GAS
-from common.consts import ERC20_TRANSFER_GAS
 from deposits.exceptions import DepositStatusError
 from deposits.models import Deposit
 from deposits.models import DepositAddress
@@ -525,9 +523,9 @@ class DepositService:
                 )
                 return 0
             gas_limit = (
-                BASE_TRANSFER_GAS
+                chain.base_transfer_gas
                 if crypto == chain.native_coin or crypto.is_native
-                else ERC20_TRANSFER_GAS
+                else chain.erc20_transfer_gas
             )
             return int(gas_price * gas_limit)
 

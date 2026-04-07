@@ -1234,16 +1234,21 @@ class WithdrawalReviewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         bump_mock.assert_not_called()
 
-    @patch(
-        "withdrawals.admin.get_fresh_admin_approval_context",
-        return_value=build_admin_approval_context(source="test_fee_bump_action"),
-    )
     @patch("withdrawals.admin.BitcoinFeeBumpService.bump_withdrawal")
     def test_bitcoin_fee_bump_admin_action_rejects_multi_select(
         self,
         bump_mock,
-        _approval_context_mock,
     ):
+        approval_ctx = build_admin_approval_context(
+            source="test_fee_bump_action"
+        )
+        patcher = patch(
+            "withdrawals.admin.get_fresh_admin_approval_context",
+            return_value=approval_ctx,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         owner = User.objects.create(
             username="merchant-btc-fee-bump-multi", is_staff=True
         )
@@ -1392,19 +1397,7 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
             status=WithdrawalStatus.REVIEWING,
         )
 
-        with (
-            patch.object(
-                Address,
-                "get_lock",
-                return_value=True,
-            ),
-            patch.object(
-                Address,
-                "release_lock",
-                return_value=None,
-            ),
-        ):
-            submitted = WithdrawalService.submit_withdrawal(withdrawal=withdrawal)
+        submitted = WithdrawalService.submit_withdrawal(withdrawal=withdrawal)
 
         submitted.refresh_from_db()
         self.assertEqual(submitted.status, WithdrawalStatus.PENDING)

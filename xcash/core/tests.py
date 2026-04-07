@@ -32,7 +32,7 @@ from chains.models import OnchainTransfer
 from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
-from chains.models import r
+from django.core.cache import cache as _cache
 from chains.tasks import block_number_updated
 from chains.tasks import confirm_transfer
 from chains.tasks import update_the_latest_block
@@ -71,7 +71,7 @@ _CORE_TEST_PATCHERS = []
 
 def setUpModule():
     # core 真实链路会用到账户锁；每轮开始前清掉测试 Redis，避免前序 run 遗留锁串扰。
-    r.flushdb()
+    _cache.clear()
     backend = build_test_remote_signer_backend()
     # core 联调测试需要真实地址派生与签名，但不应额外依赖外部 signer 进程。
     for target in (
@@ -87,7 +87,7 @@ def setUpModule():
 def tearDownModule():
     while _CORE_TEST_PATCHERS:
         _CORE_TEST_PATCHERS.pop().stop()
-    r.flushdb()
+    _cache.clear()
 
 
 @override_settings(
@@ -1564,6 +1564,9 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
         _create_event_mock,
     ):
         # 真实 regtest 联调：BTC 提币签名、广播、链上确认和 Withdrawal 状态推进都必须打通。
+        from bitcoinutils.setup import setup as bitcoinutils_setup
+
+        bitcoinutils_setup("regtest")
         wallet_client = self._require_bitcoin()
         crypto = Crypto.objects.create(
             name="Bitcoin Withdrawal Local",

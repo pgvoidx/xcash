@@ -49,6 +49,8 @@ class ChainAdmin(ModelAdmin):
                 "fields": (
                     "rpc",
                     "chain_id",
+                    "base_transfer_gas",
+                    "erc20_transfer_gas",
                 )
             },
         ),

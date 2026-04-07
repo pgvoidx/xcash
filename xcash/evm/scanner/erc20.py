@@ -244,6 +244,10 @@ class EvmErc20TransferScanner:
         log: dict[str, Any],
         watch_set: EvmWatchSet,
     ) -> ParsedErc20Log | None:
+        # 重组期间节点可能返回 removed=true 的日志，跳过以避免创建无效 Transfer。
+        if log.get("removed"):
+            return None
+
         topics = list(log.get("topics") or [])
         if len(topics) < 3:
             return None

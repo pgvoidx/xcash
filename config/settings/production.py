@@ -11,6 +11,8 @@ from .base import shared_processors
 # https://docs.djangoproject.com/en/dev/ref/settings/#secret-key
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DOMAIN = env("SITE_DOMAIN", default="").strip().lower()
+USE_HTTPS = env.bool("USE_HTTPS", default=True)
+SCHEME = "https" if USE_HTTPS else "http"
 
 # 改动原因：SITE_DOMAIN 允许为空且只提供主机名，生产配置需要分别适配 ALLOWED_HOSTS 与 CSRF_TRUSTED_ORIGINS 的格式要求。
 ALLOWED_HOSTS = [host for host in ["127.0.0.1", "localhost", DOMAIN] if host]
@@ -28,24 +30,24 @@ STORAGES = {
 
 # 基础 URL 设置
 USE_X_FORWARDED_HOST = True
-ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = SCHEME
 
 # SECURITY
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-proxy-ssl-header
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
-SECURE_HSTS_SECONDS = 3600
-SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-SECURE_HSTS_PRELOAD = True
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https") if USE_HTTPS else None
+SESSION_COOKIE_SECURE = USE_HTTPS
+CSRF_COOKIE_SECURE = USE_HTTPS
+SECURE_HSTS_SECONDS = 3600 if USE_HTTPS else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = USE_HTTPS
+SECURE_HSTS_PRELOAD = USE_HTTPS
 
-# Django 要求 CSRF_TRUSTED_ORIGINS 带 scheme；这里统一按 HTTPS 自托管入口生成。
-CSRF_TRUSTED_ORIGINS = [f"https://{DOMAIN}"] if DOMAIN else []
+# Django 要求 CSRF_TRUSTED_ORIGINS 带 scheme。
+CSRF_TRUSTED_ORIGINS = [f"{SCHEME}://{DOMAIN}"] if DOMAIN else []
 
 # 生产环境严格限制跨域来源，仅允许自身域名。
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = [f"https://{DOMAIN}"] if DOMAIN else []
+CORS_ALLOWED_ORIGINS = [f"{SCHEME}://{DOMAIN}"] if DOMAIN else []
 
 # LOGGING
 # ------------------------------------------------------------------------------

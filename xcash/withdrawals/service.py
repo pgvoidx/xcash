@@ -44,9 +44,6 @@ class WithdrawalService:
         if chain.type != ChainType.EVM:
             return 0
 
-        from evm.constants import BASE_TRANSFER_GAS
-        from evm.constants import ERC20_TRANSFER_GAS
-
         try:
             gas_price = chain.w3.eth.gas_price  # noqa: SLF001
         except Exception:
@@ -56,9 +53,9 @@ class WithdrawalService:
             return 0
 
         gas_limit = (
-            BASE_TRANSFER_GAS
+            chain.base_transfer_gas
             if crypto == chain.native_coin or crypto.is_native
-            else ERC20_TRANSFER_GAS
+            else chain.erc20_transfer_gas
         )
         return int(gas_price * gas_limit)
 

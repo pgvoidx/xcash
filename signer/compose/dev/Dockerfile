@@ -10,6 +10,8 @@ ENV PYTHONPATH=""
 RUN apt-get update && apt-get install --no-install-recommends -y \
   build-essential \
   libpq-dev \
+  pkg-config \
+  libsecp256k1-dev \
   gettext \
   wait-for-it \
   && rm -rf /var/lib/apt/lists/*

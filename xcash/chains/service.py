@@ -108,13 +108,6 @@ class AddressService:
             qs = qs.filter(usage=usage)
         return qs.get()
 
-    @staticmethod
-    def lock_for_transfer(addr: Address, chain: Chain) -> bool:
-        return addr.get_lock(chain)
-
-    @staticmethod
-    def release_lock(addr: Address, chain: Chain) -> None:
-        addr.release_lock(chain)
 
 
 @dataclass(frozen=True)

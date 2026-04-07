@@ -1364,19 +1364,7 @@ class DepositRemoteSignerFlowTests(TestCase):
             status=DepositStatus.COMPLETED,
         )
 
-        with (
-            patch.object(
-                Address,
-                "get_lock",
-                return_value=True,
-            ),
-            patch.object(
-                Address,
-                "release_lock",
-                return_value=None,
-            ),
-        ):
-            collected = DepositService.collect_deposit(deposit)
+        collected = DepositService.collect_deposit(deposit)
 
         self.assertTrue(collected)
         deposit.refresh_from_db()

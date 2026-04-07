@@ -12,7 +12,7 @@ from django.utils import timezone
 from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from chains.models import r
+from django.core.cache import cache as _cache
 from chains.test_signer import build_test_remote_signer_backend
 from projects.models import RecipientAddress
 from users.models import AdminAccessLog
@@ -27,7 +27,7 @@ _USERS_TEST_PATCHERS = []
 
 def setUpModule():
     # 用户初始化会自动创建项目与钱包；测试阶段统一切到进程内 signer 假体，避免额外依赖外部 HTTP 服务。
-    r.flushdb()
+    _cache.clear()
     backend = build_test_remote_signer_backend()
     for target in ("chains.signer.get_signer_backend",):
         patcher = patch(target, return_value=backend)
@@ -38,7 +38,7 @@ def setUpModule():
 def tearDownModule():
     while _USERS_TEST_PATCHERS:
         _USERS_TEST_PATCHERS.pop().stop()
-    r.flushdb()
+    _cache.clear()
 
 
 class CustomerRawAccIdxTests(TestCase):

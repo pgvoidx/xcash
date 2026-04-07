@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-import time
 from decimal import Decimal
 from functools import cached_property
 from typing import TYPE_CHECKING
 
 import environ
-import redis
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -30,13 +28,6 @@ if TYPE_CHECKING:
     from withdrawals.models import Withdrawal
 
 env = environ.Env()
-
-# 修复：支持宿主机运行 Django/Celery 时通过环境变量连接容器内 Redis。
-r = redis.Redis(
-    host=env.str("REDIS_HOST", default="redis"),
-    port=env.int("REDIS_PORT", default=6379),
-    db=env.int("REDIS_DB", default=0),
-)
 
 
 # Create your models here.
@@ -75,6 +66,16 @@ class Chain(models.Model):
     active = models.BooleanField(default=False, verbose_name=_("启用"))
 
     # For EVM
+    base_transfer_gas = models.PositiveIntegerField(
+        _("原生币转账 Gas Limit"),
+        default=50_000,
+        help_text=_("原生币（ETH/BNB 等）转账的 gas 上限"),
+    )
+    erc20_transfer_gas = models.PositiveIntegerField(
+        _("ERC20 转账 Gas Limit"),
+        default=100_000,
+        help_text=_("ERC-20 代币 transfer 调用的 gas 上限"),
+    )
     chain_id = models.PositiveIntegerField(
         _("Chain ID"),
         unique=True,
@@ -466,22 +467,6 @@ class Address(UndeletableModel):
         msg = f"Unsupported chain type for send_crypto: {chain.type}"
         raise NotImplementedError(msg)
 
-    def get_lock(self, chain: Chain):
-        lock_key = f"lock_address_{self.address}_{chain.code}"
-        end_time = time.time() + 5
-        while time.time() < end_time:
-            # 尝试原子性地设置锁，如果键不存在则设置并返回 True，否则返回 False
-            # TTL=60s：提币完整链路 = 签名 RPC + DB 写入 + 广播 RPC，
-            # 慢节点下可能超过 10s（原值），TTL 到期后锁消失导致 nonce 隔离失效。
-            # 60s 足够覆盖任何正常操作，进程崩溃时也能在合理时间内自动解锁。
-            acquired = r.set(lock_key, "locked", nx=True, ex=60)
-            if acquired:
-                return True
-            time.sleep(0.05)  # 短暂休眠后重试
-        return False  # 超时仍未获取到锁
-
-    def release_lock(self, chain: Chain):
-        r.delete(f"lock_address_{self.address}_{chain.code}")
 
 
 class TransferType(models.TextChoices):
@@ -1072,8 +1057,6 @@ class OnchainTransfer(models.Model):
 
         self._dispatch_business_drop()
 
-        # EVM broadcast_task 的 completed 表示整笔链上交易生命周期结束，丢弃后统一收口。
-        self._mark_evm_broadcast_task_completed()
         # 当确认前已观察到的交易后来又查不到时, 按"回退到待上链"处理;
         # 让任务继续通过重广播自愈, 而不是直接进入失败终局。
         BroadcastTask.reset_to_pending_chain(chain=self.chain, tx_hash=self.hash)

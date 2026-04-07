@@ -12,13 +12,10 @@ from web3 import Web3
 
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import TransferType
 from chains.signer import get_signer_backend
-from common.consts import BASE_TRANSFER_GAS
-from common.consts import ERC20_TRANSFER_GAS
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
 
@@ -99,7 +96,7 @@ class EvmBroadcastTask(UndeletableModel):
         on_delete=models.PROTECT,
         verbose_name=_("网络"),
     )
-    nonce = models.PositiveIntegerField(_("Nonce"))
+    nonce = models.PositiveBigIntegerField(_("Nonce"))
     to = EvmAddressField(_("To"))
     value = models.DecimalField(
         _("Value"),
@@ -252,27 +249,6 @@ class EvmBroadcastTask(UndeletableModel):
             base_task__result=BroadcastTaskResult.UNKNOWN,
         ).exists()
 
-    def _finalize_failure(self, reason: BroadcastTaskFailureReason | str) -> None:
-        """把 EVM 任务收口为失败终局，并同步业务对象状态。"""
-        if not self.base_task_id:
-            return
-
-        BroadcastTask.objects.filter(pk=self.base_task_id).update(
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=reason,
-            updated_at=timezone.now(),
-        )
-        EvmBroadcastTask.objects.filter(pk=self.pk, completed=False).update(
-            completed=True
-        )
-        self.completed = True
-
-        if self.base_task.transfer_type == TransferType.Withdrawal:
-            from withdrawals.service import WithdrawalService
-
-            WithdrawalService.fail_withdrawal(broadcast_task=self.base_task)
-
     @staticmethod
     def _is_already_known_error(exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -378,7 +354,7 @@ class EvmBroadcastTask(UndeletableModel):
             to=to,
             value=value,
             transfer_type=transfer_type,
-            gas=BASE_TRANSFER_GAS,
+            gas=chain.base_transfer_gas,
             crypto=chain.native_coin,
             recipient=to,
             amount=cls._normalize_amount(value, chain.native_coin.decimals),
@@ -407,7 +383,7 @@ class EvmBroadcastTask(UndeletableModel):
             chain=chain,
             to=contract_address,
             transfer_type=transfer_type,
-            gas=ERC20_TRANSFER_GAS,
+            gas=chain.erc20_transfer_gas,
             crypto=crypto,
             recipient=recipient,
             data=data,
