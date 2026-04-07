@@ -161,14 +161,14 @@ class DepositServiceCoreTests(TestCase):
     def test_estimate_native_fee_bitcoin_returns_nonzero(self):
         # Bitcoin 链的 fee 估算必须返回正值，否则全额归集会导致 UTXO 选择失败。
         from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-        from bitcoin.constants import BTC_P2PKH_TX_BYTES
+        from bitcoin.constants import BTC_P2WPKH_TX_VBYTES
 
         chain = SimpleNamespace(type=ChainType.BITCOIN, code="btc")
         crypto = SimpleNamespace(symbol="BTC", is_native=True)
 
         fee = DepositService._estimate_native_fee(chain, crypto)
 
-        expected = BTC_P2PKH_TX_BYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
+        expected = BTC_P2WPKH_TX_VBYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
         self.assertEqual(fee, expected)
         self.assertGreater(fee, 0)
 
@@ -290,7 +290,7 @@ class DepositServiceCoreTests(TestCase):
     def test_calculate_collection_amount_deducts_fee_for_native_bitcoin(self):
         # Bitcoin 原生币归集时应从余额中扣除预估 fee。
         from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-        from bitcoin.constants import BTC_P2PKH_TX_BYTES
+        from bitcoin.constants import BTC_P2WPKH_TX_VBYTES
 
         native = SimpleNamespace(symbol="BTC", is_native=True)
         chain = SimpleNamespace(type=ChainType.BITCOIN, code="btc", native_coin=native)
@@ -305,7 +305,7 @@ class DepositServiceCoreTests(TestCase):
             deposit, balance_raw, crypto_decimals
         )
 
-        expected_fee = BTC_P2PKH_TX_BYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
+        expected_fee = BTC_P2WPKH_TX_VBYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
         expected_amount = Decimal(balance_raw - expected_fee).scaleb(-crypto_decimals)
         self.assertEqual(amount, expected_amount)
         self.assertGreater(amount, Decimal("0"))
