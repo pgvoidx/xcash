@@ -1908,7 +1908,7 @@ class WithdrawalTryMatchTests(TestCase):
     def test_match_success_with_old_tx_hash_history(self, _process_mock):
         old_hash = self._next_hash()
         broadcast_task = self._make_broadcast_task(tx_hash=old_hash)
-        broadcast_task.create_initial_tx_hash()
+        broadcast_task.append_tx_hash(old_hash)
         broadcast_task.append_tx_hash(self._next_hash())
         Withdrawal.objects.create(
             project=self.project,

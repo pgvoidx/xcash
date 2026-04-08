@@ -250,16 +250,8 @@ class BroadcastTaskTxHashHistoryTests(TestCase):
             result=BroadcastTaskResult.UNKNOWN,
         )
 
-    def test_create_initial_tx_hash_records_version_one(self):
-        tx_hash = self.task.create_initial_tx_hash()
-
-        self.assertEqual(tx_hash.hash, self.task.tx_hash)
-        self.assertEqual(tx_hash.version, 1)
-        self.assertEqual(tx_hash.chain_id, self.task.chain_id)
-        self.assertEqual(tx_hash.broadcast_task_id, self.task.pk)
-
     def test_append_tx_hash_updates_current_tx_hash_and_keeps_history(self):
-        self.task.create_initial_tx_hash()
+        self.task.append_tx_hash(self.task.tx_hash)
 
         appended = self.task.append_tx_hash("0x" + "e2" * 32)
 
@@ -272,7 +264,7 @@ class BroadcastTaskTxHashHistoryTests(TestCase):
         )
 
     def test_resolve_broadcast_task_by_old_hash(self):
-        self.task.create_initial_tx_hash()
+        self.task.append_tx_hash(self.task.tx_hash)
         self.task.append_tx_hash("0x" + "e2" * 32)
 
         resolved = BroadcastTask.resolve_by_hash(
@@ -691,55 +683,6 @@ class SignerBackendTests(TestCase):
         SIGNER_TIMEOUT=3.5,
         SIGNER_SHARED_SECRET="secret",
     )
-    @patch("chains.signer.httpx.post")
-    def test_remote_signer_backend_posts_bitcoin_sign_request(self, httpx_post_mock):
-        # Bitcoin 远端 signer 请求也必须只携带钱包定位参数和已选中的 UTXO，不直接暴露业务模型。
-        addr = Mock(
-            wallet_id=18, chain_type=ChainType.BITCOIN, bip44_account=1, address_index=0
-        )
-        response = Mock()
-        response.json.return_value = {
-            "txid": "ab" * 32,
-            "signed_payload": "010000000001",
-        }
-        httpx_post_mock.return_value = response
-
-        payload = get_signer_backend().sign_bitcoin_transaction(
-            address=addr,
-            chain=Mock(),
-            source_address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            to="1KFHE7w8BhaENAswwryaoccDb6qcT6DbYY",
-            amount_satoshi=10_000,
-            fee_satoshi=250,
-            replaceable=True,
-            utxos=[
-                {
-                    "txid": "cd" * 32,
-                    "vout": 1,
-                    "amount": "0.001",
-                    "confirmations": 12,
-                    "scriptPubKey": "76a914",
-                }
-            ],
-        )
-
-        self.assertEqual(payload.txid, "ab" * 32)
-        self.assertEqual(payload.signed_payload, "010000000001")
-        _, kwargs = httpx_post_mock.call_args
-        body = kwargs["content"].decode("utf-8")
-        self.assertIn(f'"chain_type":"{ChainType.BITCOIN}"', body)
-        self.assertIn('"bip44_account":1', body)
-        self.assertIn('"address_index":0', body)
-        self.assertIn('"source_address":"1BoatSLRHtKNngkdXEeobR76b53LETtpyT"', body)
-        self.assertIn('"replaceable":true', body)
-        self.assertIn('"script_pub_key":"76a914"', body)
-
-    @override_settings(
-        SIGNER_BACKEND="remote",
-        SIGNER_BASE_URL="http://signer.internal",
-        SIGNER_TIMEOUT=3.5,
-        SIGNER_SHARED_SECRET="secret",
-    )
     @patch("chains.signer.httpx.get")
     def test_remote_signer_backend_fetches_admin_summary(self, httpx_get_mock):
         # 主应用后台只通过内部只读 API 拉取 signer 摘要，不直接读取 signer 数据库。
@@ -1110,7 +1053,7 @@ class BroadcastTaskTransitionTests(TestCase):
 
     def test_mark_finalized_success_can_resolve_old_hash(self):
         old_hash = self.task.tx_hash
-        self.task.create_initial_tx_hash()
+        self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "ee" * 32)
 
         updated = BroadcastTask.mark_finalized_success(
@@ -1126,7 +1069,7 @@ class BroadcastTaskTransitionTests(TestCase):
 
     def test_reset_to_pending_chain_can_resolve_old_hash(self):
         old_hash = self.task.tx_hash
-        self.task.create_initial_tx_hash()
+        self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "ef" * 32)
 
         updated = BroadcastTask.reset_to_pending_chain(
@@ -1208,7 +1151,7 @@ class BroadcastTaskTransitionTests(TestCase):
 
     def test_mark_pending_confirm_can_resolve_old_hash(self):
         old_hash = self.task.tx_hash
-        self.task.create_initial_tx_hash()
+        self.task.append_tx_hash(old_hash)
         self.task.append_tx_hash("0x" + "f0" * 32)
 
         updated = BroadcastTask.mark_pending_confirm(

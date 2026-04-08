@@ -37,12 +37,12 @@ class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
     @display(
         description="状态",
         label={
-            "待执行": "warning",
+            "待广播": "warning",
             "待上链": "warning",
-            "待确认": "info",
+            "确认中": "info",
             "成功": "success",
             "失败": "danger",
-            "已结束": "info",
+            "已终结": "info",
         },
     )
     def display_status(self, instance: EvmBroadcastTask):

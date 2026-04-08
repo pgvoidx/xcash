@@ -105,7 +105,7 @@ class DepositService:
         """
         加行锁执行状态转换：CONFIRMING -> target。
 
-        并发安全：select_for_update 防止重复确认/丢弃。
+        并发安全：select_for_update 防止重复确认。
         幂等：已处于目标状态则返回 False（跳过），非 CONFIRMING 则抛异常。
         """
         Deposit.objects.select_for_update().filter(pk=deposit.pk).first()
@@ -126,8 +126,15 @@ class DepositService:
             cls.notify_completed(deposit)
 
     @classmethod
+    @db_transaction.atomic
     def drop_deposit(cls, deposit: Deposit) -> None:
-        cls._transition_status(deposit, DepositStatus.DROPPED)
+        """删除 CONFIRMING 状态的充值记录，释放数据以便 reorg 后扫描器自然重建。"""
+        if not Deposit.objects.select_for_update().filter(pk=deposit.pk).exists():
+            return  # 已删除，幂等跳过
+        deposit.refresh_from_db()
+        if deposit.status != DepositStatus.CONFIRMING:
+            raise DepositStatusError("Deposit status must be CONFIRMING")
+        deposit.delete()
 
     @classmethod
     def prepare_collection(cls, deposit: Deposit) -> dict | None:  # noqa: PLR0911
@@ -321,6 +328,20 @@ class DepositService:
             return cls._to_amount(net_raw, crypto_decimals)
 
         return cls._to_amount(balance_raw, crypto_decimals)
+
+    @staticmethod
+    def try_match_gas_recharge(transfer: OnchainTransfer) -> bool:
+        """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账。"""
+        from chains.models import BroadcastTask
+
+        task = BroadcastTask.resolve_by_hash(
+            chain=transfer.chain, tx_hash=transfer.hash
+        )
+        if task is None or task.transfer_type != TransferType.GasRecharge:
+            return False
+        transfer.type = TransferType.GasRecharge
+        transfer.save(update_fields=["type"])
+        return True
 
     @classmethod
     @db_transaction.atomic

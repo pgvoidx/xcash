@@ -51,22 +51,12 @@ class DepositServiceCoreTests(TestCase):
         DepositService.confirm_deposit(deposit)
 
     @patch("deposits.service.Deposit.objects")
-    def test_confirm_deposit_rejects_non_confirming_status(self, deposit_objects_mock):
-        # 非 CONFIRMING 状态（如 DROPPED）调用 confirm 应抛异常。
-        from deposits.exceptions import DepositStatusError
-
-        deposit = SimpleNamespace(pk=1, status=DepositStatus.DROPPED)
-        # mock refresh_from_db：保持当前状态
-        deposit.refresh_from_db = Mock()
-        with self.assertRaises(DepositStatusError):
-            DepositService.confirm_deposit(deposit)
-
-    @patch("deposits.service.Deposit.objects")
-    def test_drop_deposit_idempotent_when_already_dropped(self, deposit_objects_mock):
-        # 已丢弃的 deposit 重复 drop 不应抛异常。
-        deposit = SimpleNamespace(
-            pk=1, status=DepositStatus.DROPPED, refresh_from_db=Mock()
+    def test_drop_deposit_idempotent_when_already_deleted(self, deposit_objects_mock):
+        # 已删除的 deposit 重复 drop 不应抛异常。
+        deposit_objects_mock.select_for_update.return_value.filter.return_value.exists.return_value = (
+            False
         )
+        deposit = SimpleNamespace(pk=1)
         DepositService.drop_deposit(deposit)
 
     @patch("deposits.service.Deposit.objects")
@@ -76,6 +66,10 @@ class DepositServiceCoreTests(TestCase):
 
         deposit = SimpleNamespace(pk=1, status=DepositStatus.COMPLETED)
         deposit.refresh_from_db = Mock()
+        deposit.delete = Mock()
+        deposit_objects_mock.select_for_update.return_value.filter.return_value.exists.return_value = (
+            True
+        )
         with self.assertRaises(DepositStatusError):
             DepositService.drop_deposit(deposit)
 
@@ -503,68 +497,6 @@ class DepositServiceDecimalsTests(SimpleTestCase):
 
 
 class DepositTransferRematchTests(TestCase):
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_confirmed_transfer_becomes_completed_deposit_when_reprocessed(
-        self,
-        _process_transfer_mock,
-    ):
-        # 历史 confirmed 转账若之前因占位币未归类，重新 process 后应直接补齐为 completed deposit。
-        User.objects.bulk_create([User(username="merchant")])
-        wallet = Wallet.objects.create()
-        project = Project.objects.create(name="Demo", wallet=wallet)
-        customer = Customer.objects.create(project=project, uid="customer-1")
-        crypto = Crypto.objects.create(
-            name="Tether",
-            symbol="USDT",
-            coingecko_id="tether",
-        )
-        chain = Chain.objects.create(
-            name="Ethereum",
-            code="eth",
-            type=ChainType.EVM,
-            native_coin=Crypto.objects.create(
-                name="Ethereum",
-                symbol="ETH",
-                coingecko_id="ethereum",
-            ),
-            chain_id=1,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        addr = Address.objects.create(
-            wallet=wallet,
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
-            bip44_account=0,
-            address_index=0,
-            address="0x0000000000000000000000000000000000000001",
-        )
-        DepositAddress.objects.create(
-            customer=customer,
-            chain_type=chain.type,
-            address=addr,
-        )
-        transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=1,
-            hash="0x" + "1" * 64,
-            event_id="erc20:0",
-            crypto=crypto,
-            from_address="0x0000000000000000000000000000000000000002",
-            to_address=addr.address,
-            value="1",
-            amount=Decimal("1"),
-            timestamp=1,
-            datetime=timezone.now(),
-            status=TransferStatus.CONFIRMED,
-        )
-
-        transfer.process()
-
-        transfer.refresh_from_db()
-        self.assertEqual(transfer.type, TransferType.Deposit)
-        self.assertEqual(transfer.deposit.status, DepositStatus.COMPLETED)
-
     @patch("deposits.service.WebhookService.create_event")
     def test_confirm_deposit_emits_completed_webhook(self, create_event_mock):
         # Deposit 显式确认后必须直接发完成通知，不再依赖 post_save signal。

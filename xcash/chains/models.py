@@ -6,7 +6,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 import environ
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import models
@@ -270,10 +269,6 @@ class Wallet(UndeletableModel):
         创建钱包引用并委托独立 signer 生成远端钱包。
         :return:
         """
-        # 新钱包在 remote signer 模式下先创建本地引用，再通知 signer 以同一个 wallet_id 建立密钥映射。
-        if settings.SIGNER_BACKEND.lower() != "remote":
-            raise RuntimeError("主应用仅支持 remote signer，无法在本地创建钱包")
-
         from chains.signer import SignerServiceError
         from chains.signer import get_signer_backend
 
@@ -309,13 +304,9 @@ class Wallet(UndeletableModel):
         from django.db import IntegrityError
 
         bip44_account = self.get_bip44_account(usage)
-        if settings.SIGNER_BACKEND.lower() != "remote":
-            raise RuntimeError("主应用仅支持 remote signer，无法派生地址")
 
         from chains.signer import SignerServiceError
         from chains.signer import get_signer_backend
-
-        # 主应用原生依赖独立 signer；地址派生统一走 signer 服务。
         try:
             expected_address = get_signer_backend().derive_address(
                 wallet=self,
@@ -371,13 +362,6 @@ class Wallet(UndeletableModel):
                 f"expected_address={expected_address} actual_address={addr_obj.address}"
             )
 
-        chain_type_value = (
-            chain_type.value if isinstance(chain_type, ChainType) else str(chain_type)
-        )
-        if created and chain_type_value == ChainType.BITCOIN:
-            from bitcoin.watch_sync import schedule_watch_address_sync_on_commit
-
-            schedule_watch_address_sync_on_commit()
         return addr_obj
 
 
@@ -410,10 +394,6 @@ class Address(UndeletableModel):
 
     def __str__(self):
         return f"{self.address}"
-
-    @property
-    def private_key(self) -> str:
-        raise RuntimeError("主应用不再提供本地私钥派生，请通过独立 signer 服务签名")
 
     def send_crypto(
         self,
@@ -455,14 +435,14 @@ class TransferType(models.TextChoices):
 
     GasRecharge = "gas-recharge", "⛽ Gas分发"
     DepositCollection = "deposit-collection", "💵 归集充币"
-    Prefunding = "prefunding", "🏦 注入待提币资金"
+    Prefunding = "prefunding", "🏦 注入金库资金"
 
 
 class BroadcastTaskStage(models.TextChoices):
-    QUEUED = "queued", _("待执行")
+    QUEUED = "queued", _("待广播")
     PENDING_CHAIN = "pending_chain", _("待上链")
-    PENDING_CONFIRM = "pending_confirm", _("待确认")
-    FINALIZED = "finalized", _("已结束")
+    PENDING_CONFIRM = "pending_confirm", _("确认中")
+    FINALIZED = "finalized", _("已终结")
 
 
 class BroadcastTaskResult(models.TextChoices):
@@ -532,7 +512,7 @@ class BroadcastTask(UndeletableModel):
     """跨链统一的链上任务锚点。
 
     设计原则：
-    - stage 只描述当前所处阶段：待执行 / 待上链 / 待确认 / 已结束。
+    - stage 只描述当前所处阶段：待广播 / 待上链 / 确认中 / 已终结。
     - result 只描述终局结果：未知 / 成功 / 失败。
     - 广播重试等实现细节继续留在各链子表，避免把"是否广播"污染到统一领域模型。
     - Withdrawal 等业务对象统一外键到该模型，不再直接依赖具体链实现或 tx hash。
@@ -602,13 +582,13 @@ class BroadcastTask(UndeletableModel):
                 name="uniq_broadcast_task_chain_hash",
             ),
             models.CheckConstraint(
-                # 只要出现成功/失败终局结果，就必须已经进入已结束阶段。
+                # 只要出现成功/失败终局结果，就必须已经进入已终结阶段。
                 condition=models.Q(result=BroadcastTaskResult.UNKNOWN)
                 | models.Q(stage=BroadcastTaskStage.FINALIZED),
                 name="ck_broadcast_task_result_requires_finalized_stage",
             ),
             models.CheckConstraint(
-                # 已结束任务不能继续保留未知结果，否则会把阶段和结果语义混在一起。
+                # 已终结任务不能继续保留未知结果，否则会把阶段和结果语义混在一起。
                 condition=~models.Q(stage=BroadcastTaskStage.FINALIZED)
                 | ~models.Q(result=BroadcastTaskResult.UNKNOWN),
                 name="ck_broadcast_task_finalized_requires_known_result",
@@ -639,13 +619,13 @@ class BroadcastTask(UndeletableModel):
 
         if self.result in {BroadcastTaskResult.SUCCESS, BroadcastTaskResult.FAILED}:
             if self.stage != BroadcastTaskStage.FINALIZED:
-                errors["stage"] = _("成功/失败结果只能出现在已结束阶段。")
+                errors["stage"] = _("成功/失败结果只能出现在已终结阶段。")
 
         if (
             self.stage == BroadcastTaskStage.FINALIZED
             and self.result == BroadcastTaskResult.UNKNOWN
         ):
-            errors["result"] = _("已结束任务必须给出成功或失败结果。")
+            errors["result"] = _("已终结任务必须给出成功或失败结果。")
 
         if self.result == BroadcastTaskResult.FAILED:
             if not self.failure_reason:
@@ -675,24 +655,6 @@ class BroadcastTask(UndeletableModel):
         return (
             self.stage == BroadcastTaskStage.FINALIZED
             and self.result == BroadcastTaskResult.SUCCESS
-        )
-
-    @db_transaction.atomic
-    def create_initial_tx_hash(self) -> TxHash:
-        locked_task = BroadcastTask.objects.select_for_update().get(pk=self.pk)
-        if not locked_task.tx_hash:
-            raise ValueError("BroadcastTask 缺少 tx_hash，无法创建初始历史")
-        tx_hash = TxHash.objects.filter(
-            broadcast_task=locked_task,
-            version=1,
-        ).first()
-        if tx_hash is not None:
-            return tx_hash
-        return TxHash.objects.create(
-            broadcast_task=locked_task,
-            chain=locked_task.chain,
-            hash=locked_task.tx_hash,
-            version=1,
         )
 
     @db_transaction.atomic
@@ -734,27 +696,24 @@ class BroadcastTask(UndeletableModel):
 
     @staticmethod
     def resolve_by_hash(*, chain: Chain, tx_hash: str) -> BroadcastTask | None:
+        """通过 tx_hash 查找对应的 BroadcastTask。
+
+        优先从 TxHash 历史记录匹配（覆盖 gas 重签后的旧 hash），
+        未命中时回退到 BroadcastTask.tx_hash（当前 hash）。
+        两张表均有 (chain, hash) 唯一约束，无需额外去重。
+        """
         if not tx_hash:
             return None
-        history_qs = TxHash.objects.select_related("broadcast_task").filter(
-            chain=chain,
-            hash=tx_hash,
+        # 优先查历史记录（gas 重签后旧 hash 只存在于 TxHash 表）
+        history = (
+            TxHash.objects.select_related("broadcast_task")
+            .filter(chain=chain, hash=tx_hash)
+            .first()
         )
-        history_count = history_qs.count()
-        if history_count > 1:
-            raise RuntimeError(
-                f"Duplicate TxHash rows found: chain={chain.pk} hash={tx_hash}"
-            )
-        if history_count == 1:
-            return history_qs.first().broadcast_task
-
-        task_qs = BroadcastTask.objects.filter(chain=chain, tx_hash=tx_hash)
-        task_count = task_qs.count()
-        if task_count > 1:
-            raise RuntimeError(
-                f"Duplicate BroadcastTask rows found for current tx_hash: chain={chain.pk} hash={tx_hash}"
-            )
-        return task_qs.first()
+        if history is not None:
+            return history.broadcast_task
+        # 回退到当前 tx_hash
+        return BroadcastTask.objects.filter(chain=chain, tx_hash=tx_hash).first()
 
     @staticmethod
     def mark_finalized_success(*, chain: Chain, tx_hash: str) -> int:
@@ -844,7 +803,7 @@ class BroadcastTask(UndeletableModel):
 
     @staticmethod
     def mark_pending_confirm(*, chain: Chain, tx_hash: str) -> int:
-        """链上已观察到交易后，将未终结的任务推进到待确认阶段。
+        """链上已观察到交易后，将未终结的任务推进到确认中阶段。
 
         使用 .update() 绕过 save()/full_clean() 以避免逐行加载，
         依赖 DB CheckConstraint 保证状态三元组一致性。
@@ -878,7 +837,6 @@ class BroadcastTask(UndeletableModel):
 class TransferStatus(models.TextChoices):
     CONFIRMING = "confirming", _("确认中")
     CONFIRMED = "confirmed", _("已确认")
-    DROPPED = "dropped", _("丢弃")
 
 
 class ConfirmMode(models.TextChoices):
@@ -968,26 +926,20 @@ class OnchainTransfer(models.Model):
         self.refresh_from_db()
         if self.processed_at:
             return
-        was_untyped = not self.type
 
         from deposits.service import DepositService
         from invoices.service import InvoiceService
         from withdrawals.service import WithdrawalService
 
-        # 修复：原实现使用 any(list)，会先把所有匹配器都执行一遍。
         # 资金类转账应在首个业务成功匹配后立即停止，避免同一笔转账被多条业务路径重复消费。
         (
             InvoiceService.try_match_invoice(self)
             or DepositService.try_create_deposit(self)
+            or DepositService.try_match_gas_recharge(self)
             or DepositService.try_match_collection(self)
             or WithdrawalService.try_match_withdrawal(self)
             or WithdrawalService.try_match_withdrawal_funding(self)
         )
-        self.refresh_from_db()
-        if was_untyped:
-            # 历史占位币在映射修正后会被重新归类；若转账此时已是 confirmed/dropped，
-            # 这里要把业务对象状态一次性追平，避免卡在 confirming。
-            self._sync_business_state_for_finalized_transfer()
         self.processed_at = timezone.now()
         # Transfer 处理完成标记不依赖 save() 信号，直接 update 可减少无关字段回写。
         OnchainTransfer.objects.filter(pk=self.pk).update(
@@ -1026,7 +978,7 @@ class OnchainTransfer(models.Model):
     def drop(self):
         """回退关联业务状态，然后删除 Transfer 记录。
 
-        删除而非标记 DROPPED: 释放唯一约束 (chain, hash, event_id),
+        删除记录以释放唯一约束 (chain, hash, event_id),
         使 reorg 后同一笔 tx 被重新打包时, 扫描器可以自然重建 Transfer。
         """
         # 先加行锁，防止并发处理；已删除的 Transfer 直接跳过。
@@ -1078,16 +1030,8 @@ class OnchainTransfer(models.Model):
             completed=False,
         ).update(completed=True)
 
-    def _sync_business_state_for_finalized_transfer(self) -> None:
-        """当历史 Transfer 被重新归类时，根据现有链上状态追平业务对象状态。"""
-        if not self.type:
-            return
-
-        if self.status == TransferStatus.CONFIRMED:
-            self._dispatch_business_confirm()
-
     def _dispatch_business_confirm(self) -> None:
-        """统一按 TransferType 分发确认动作，confirm() 和追平逻辑共用。"""
+        """统一按 TransferType 分发确认动作，confirm() 专用。"""
         from deposits.service import DepositService
         from invoices.service import InvoiceService
         from withdrawals.service import WithdrawalService

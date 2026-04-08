@@ -28,7 +28,7 @@ def broadcast_evm_task(pk: int) -> None:
     # 任务入口统一使用 BroadcastTask 命名，避免继续暴露旧的广播载荷概念。
     broadcast_task = EvmBroadcastTask.objects.select_related("base_task").get(pk=pk)
     if broadcast_task.base_task_id:
-        # 已进入待确认/已结束的任务不应再重复广播。
+        # 已进入确认中/已终结的任务不应再重复广播。
         if (
             broadcast_task.base_task.result != BroadcastTaskResult.UNKNOWN
             or broadcast_task.base_task.stage

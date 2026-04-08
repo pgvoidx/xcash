@@ -10,10 +10,6 @@ class Command(BaseCommand):
     help = "检查独立 signer 服务健康状态"
 
     def handle(self, *args, **options):
-        if settings.SIGNER_BACKEND.lower() != "remote":
-            self.stdout.write("当前不是 remote signer 模式，跳过 signer 服务检查")
-            return
-
         if not settings.SIGNER_BASE_URL:
             raise CommandError("SIGNER_BASE_URL 未配置，无法检查 signer 服务")
 

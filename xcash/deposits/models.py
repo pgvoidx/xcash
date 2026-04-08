@@ -76,8 +76,6 @@ class DepositStatus(models.TextChoices):
     CONFIRMING = "confirming", _("确认中")
     # 状态2: 交易确认数达标，充值成功
     COMPLETED = "completed", _("已完成")
-    # 状态3: 充值但交易失效
-    DROPPED = "dropped", _("丢弃")
 
 
 class DepositCollection(models.Model):

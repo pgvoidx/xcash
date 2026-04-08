@@ -216,7 +216,7 @@ class EvmBroadcastTask(UndeletableModel):
 
     def _mark_pending_chain(self) -> None:
         if self.base_task_id:
-            # 首次成功提交到节点后，统一父任务从"待执行"进入"待上链"。
+            # 首次成功提交到节点后，统一父任务从"待广播"进入"待上链"。
             BroadcastTask.objects.filter(
                 pk=self.base_task_id,
                 stage=BroadcastTaskStage.QUEUED,

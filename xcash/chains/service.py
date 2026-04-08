@@ -165,7 +165,7 @@ class TransferService:
 
     @staticmethod
     def _mark_broadcast_task_pending_confirm(*, chain: Chain, tx_hash: str) -> None:
-        # 一旦链上已经观察到真实交易，统一父任务就进入"待确认"阶段。
+        # 一旦链上已经观察到真实交易，统一父任务就进入"确认中"阶段。
         BroadcastTask.mark_pending_confirm(chain=chain, tx_hash=tx_hash)
 
     @staticmethod

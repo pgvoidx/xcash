@@ -109,7 +109,6 @@ class DepositAdmin(ReadOnlyModelAdmin):
         description="状态",
         label={
             "确认中": "info",
-            "丢弃": "warning",
             "已完成": "success",
         },
     )
