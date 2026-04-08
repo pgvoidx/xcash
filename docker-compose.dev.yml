@@ -74,62 +74,17 @@ services:
       - "5"
 
   bitcoin:
-    # 本地联调优先使用仍在维护的 bitcoind 镜像，避免停留在多年未更新的旧仓库。
-    # 该镜像运行用户为 bitcoind，HOME=/data/，链数据位于 /data/.bitcoin。
-    image: lncm/bitcoind:v27.2
+    # 与生产环境统一使用 Bitcoin Core 官方镜像，减少环境差异。
+    image: bitcoin/bitcoin:28
     container_name: xcash_dev_bitcoin
     restart: unless-stopped
     ports:
       - "${LOCAL_BTC_RPC_PORT:-18443}:18443"
-      - "${LOCAL_BTC_ZMQ_BLOCK_PORT:-28332}:28332"
-      - "${LOCAL_BTC_ZMQ_TX_PORT:-28333}:28333"
     volumes:
-      - xcash_dev_bitcoin_data:/data/.bitcoin
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        # 后台启动 bitcoind，保留镜像默认的 ZMQ 推送参数，记录 PID 以便优雅关闭
-        bitcoind \
-          -regtest=1 -server=1 -txindex=1 \
-          -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
-          -rpcuser=${LOCAL_BTC_RPC_USER:-xcash} \
-          -rpcpassword=${LOCAL_BTC_RPC_PASSWORD:-xcash} \
-          -fallbackfee=${LOCAL_BTC_FALLBACK_FEE:-0.0002} \
-          -zmqpubrawblock=tcp://0.0.0.0:28332 \
-          -zmqpubrawtx=tcp://0.0.0.0:28333 &
-        BITCOIND_PID=$$!
-
-        # 收到 SIGTERM/SIGINT 时优雅停止 bitcoind
-        trap "kill $$BITCOIND_PID; wait $$BITCOIND_PID; exit 0" TERM INT
-
-        BTC="bitcoin-cli -regtest -rpcuser=${LOCAL_BTC_RPC_USER:-xcash} -rpcpassword=${LOCAL_BTC_RPC_PASSWORD:-xcash}"
-
-        echo "等待 bitcoind 就绪..."
-        until $$BTC getblockchaininfo > /dev/null 2>&1; do
-          # 如果 bitcoind 进程已退出，直接终止
-          kill -0 $$BITCOIND_PID 2>/dev/null || exit 1
-          sleep 1
-        done
-
-        # 创建或加载 miner 钱包（重启时钱包已存在，loadwallet 即可）
-        $$BTC createwallet "miner" > /dev/null 2>&1 || \
-        $$BTC loadwallet "miner" > /dev/null 2>&1 || true
-
-        # 固定挖矿地址，避免每次重启生成新地址导致奖励分散
-        ADDR_FILE="/data/.bitcoin/miner_address"
-        if [ -f "$$ADDR_FILE" ]; then
-          ADDR=$$(cat "$$ADDR_FILE")
-        else
-          ADDR=$$($$BTC -rpcwallet=miner getnewaddress "mining")
-          echo "$$ADDR" > "$$ADDR_FILE"
-        fi
-        echo "挖矿地址: $$ADDR"
-
-        # 每 5 秒自动出块，挖矿奖励进入 miner 钱包
-        while kill -0 $$BITCOIND_PID 2>/dev/null; do
-          $$BTC -rpcwallet=miner generatetoaddress 1 "$$ADDR" > /dev/null 2>&1
-          sleep ${LOCAL_BTC_BLOCK_INTERVAL:-5}
-        done
+      - xcash_dev_bitcoin_data:/root/.bitcoin
+      - ./compose/dev/bitcoin/bitcoin.conf:/root/.bitcoin/bitcoin.conf:ro
+      - ./compose/dev/bitcoin/start:/usr/local/bin/start-bitcoin:ro
+    command: ["sh", "/usr/local/bin/start-bitcoin"]
 
   signer-db:
     image: postgres:18.3-trixie

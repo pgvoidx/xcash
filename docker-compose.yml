@@ -2,6 +2,7 @@ volumes:
   xcash_redis_data: {}
   xcash_django_db_data: {}
   xcash_signer_db_data: {}
+  xcash_bitcoin_data: {}
 
 services:
   redis:
@@ -63,6 +64,17 @@ services:
       SIGNER_REDIS_PORT: 6379
     command: /start
 
+  bitcoin:
+    # Bitcoin Core 官方镜像，经 reproducible build 验证。
+    # 裁剪节点仅供 Invoice 支付扫描，不发送交易。
+    image: bitcoin/bitcoin:28
+    container_name: xcash_bitcoin
+    restart: unless-stopped
+    volumes:
+      - xcash_bitcoin_data:/root/.bitcoin
+      - ./compose/production/bitcoin/bitcoin.conf:/root/.bitcoin/bitcoin.conf:ro
+    # 账密已固定在 bitcoin.conf 中，不对外暴露端口，无需环境变量注入
+
   django: &django
     build:
       context: .
@@ -74,6 +86,7 @@ services:
       - django-db
       - redis
       - signer
+      - bitcoin
     env_file:
       - .env
     environment:
@@ -87,6 +100,8 @@ services:
       SIGNER_BACKEND: remote
       SIGNER_BASE_URL: http://signer:8000
       SIGNER_TIMEOUT: 8
+      # Bitcoin Core pruned node（仅 Invoice 支付扫描）
+      BITCOIN_RPC_URL: http://xcash:xcash@bitcoin:8332/
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dash.rule=Host(`${SITE_DOMAIN}`)"

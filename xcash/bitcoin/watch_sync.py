@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from django.db import transaction
-
 import structlog
+from django.db import transaction
 
 from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
-from chains.models import Address
 from chains.models import Chain
 from chains.models import ChainType
 from projects.models import RecipientAddress
@@ -23,12 +21,7 @@ class BitcoinWatchSyncService:
 
     @staticmethod
     def load_known_imports() -> list[tuple[str, str]]:
-        address_imports = [
-            (address, f"addr({address})")
-            for address in Address.objects.filter(chain_type=ChainType.BITCOIN)
-            .values_list("address", flat=True)
-        ]
-        recipient_imports = [
+        return [
             (address, f"addr({address})")
             for address in RecipientAddress.objects.filter(
                 chain_type=ChainType.BITCOIN
@@ -37,11 +30,6 @@ class BitcoinWatchSyncService:
                 flat=True,
             )
         ]
-
-        deduped: dict[str, str] = {}
-        for address, descriptor in [*address_imports, *recipient_imports]:
-            deduped.setdefault(address, descriptor)
-        return list(deduped.items())
 
     @classmethod
     def sync_chain(cls, chain: Chain) -> int:

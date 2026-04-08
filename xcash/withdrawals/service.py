@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 class WithdrawalService:
     # 当前支持提币的链类型；新增链类型需同步更新 submit_withdrawal 中的分发逻辑。
-    WITHDRAWAL_SUPPORTED_CHAIN_TYPES = (ChainType.EVM, ChainType.BITCOIN)
+    WITHDRAWAL_SUPPORTED_CHAIN_TYPES = (ChainType.EVM,)
 
     POLICY_TRACKED_STATUSES = (
         WithdrawalStatus.REVIEWING,
@@ -277,39 +277,6 @@ class WithdrawalService:
         return task.base_task
 
     @classmethod
-    def _schedule_bitcoin_withdrawal(
-        cls,
-        *,
-        vault_address,
-        chain,
-        crypto,
-        to,
-        amount,
-        verify_fn,
-    ):
-        """Bitcoin 提币签名后立即返回 txid，并在事务提交后异步广播。"""
-        from bitcoin.models import BitcoinBroadcastTask
-        from bitcoin.tasks import broadcast_bitcoin_broadcast_task
-
-        task = BitcoinBroadcastTask.schedule_transfer(
-            address=vault_address,
-            chain=chain,
-            crypto=crypto,
-            to=to,
-            amount=amount,
-            transfer_type=TransferType.Withdrawal,
-            verify_fn=verify_fn,
-        )
-        # 提前取出 pk，避免 lambda 闭包捕获整个 ORM 对象
-        task_pk = task.pk
-        db_transaction.on_commit(
-            lambda: broadcast_bitcoin_broadcast_task.apply_async(
-                args=(task_pk,), countdown=1
-            )
-        )
-        return task.base_task
-
-    @classmethod
     def submit_withdrawal(cls, *, withdrawal: Withdrawal) -> Withdrawal:
         """把审核通过的提币请求真正送入链上发送队列。"""
         # 提币含可空外键（如 chain/broadcast_task），这里避免 select_related + FOR UPDATE 触发 PostgreSQL 限制。
@@ -351,26 +318,17 @@ class WithdrawalService:
         if value_raw <= 0:
             raise APIError(ErrorCode.PARAMETER_ERROR)
 
-        if chain.type == ChainType.EVM:
-            broadcast_task = cls._schedule_evm_withdrawal(
-                vault_address=vault_address,
-                chain=chain,
-                crypto=crypto,
-                to=withdrawal.to,
-                value_raw=value_raw,
-                verify_fn=verify_fn,
-            )
-        elif chain.type == ChainType.BITCOIN:
-            broadcast_task = cls._schedule_bitcoin_withdrawal(
-                vault_address=vault_address,
-                chain=chain,
-                crypto=crypto,
-                to=withdrawal.to,
-                amount=amount,
-                verify_fn=verify_fn,
-            )
-        else:
+        if chain.type != ChainType.EVM:
             raise APIError(ErrorCode.INVALID_CHAIN)
+
+        broadcast_task = cls._schedule_evm_withdrawal(
+            vault_address=vault_address,
+            chain=chain,
+            crypto=crypto,
+            to=withdrawal.to,
+            value_raw=value_raw,
+            verify_fn=verify_fn,
+        )
 
         # 提币请求只有在链上任务创建成功后才切到 PENDING，避免"无任务的待执行单"。
         withdrawal.broadcast_task = broadcast_task

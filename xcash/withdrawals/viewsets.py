@@ -103,8 +103,10 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
             WithdrawalService.initialize_withdrawal(withdrawal)
 
         if not should_require_review:
-            # 关闭审核或命中免审核门槛时，创建接口直接推进到链上发送队列，但仍复用统一的 service 提交流程。
-            withdrawal = WithdrawalService.submit_withdrawal(withdrawal=withdrawal)
+            # 关闭审核或命中免审核门槛时，推进到链上发送队列。
+            withdrawal = WithdrawalService.submit_withdrawal(
+                withdrawal=withdrawal
+            )
 
         return Response(
             {

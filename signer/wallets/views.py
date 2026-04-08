@@ -5,8 +5,6 @@ import hmac
 import json
 from datetime import timedelta
 
-from bitcoin_support.utils import btc_to_satoshi
-from bitcoin_support.utils import is_valid_bitcoin_address
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
@@ -236,6 +234,8 @@ class SignerAPIView(APIView):
             return current > limit
 
     def _assert_rate_limit(self, request) -> None:
+        if settings.DEBUG:
+            return
         remote_ip = self._request_meta(request)["remote_ip"] or "unknown"
         cache_key = self._rate_limit_key(remote_ip=remote_ip, endpoint=request.path)
         if self._atomic_rate_check(
@@ -253,6 +253,8 @@ class SignerAPIView(APIView):
     def _assert_wallet_sign_rate_limit(
         self, *, wallet: SignerWallet, endpoint: str
     ) -> None:
+        if settings.DEBUG:
+            return
         cache_key = self._wallet_sign_rate_limit_key(
             wallet_id=wallet.xcash_wallet_id,
             endpoint=endpoint,
@@ -413,41 +415,6 @@ class SignEvmSerializer(serializers.Serializer):
         # 限制 calldata 最大长度，防止恶意构造超大 data 消耗 signer 资源。
         if len(value["data"]) > 2 + 64 * 20:
             raise serializers.ValidationError("data 字段过长")
-        return value
-
-
-class BitcoinUtxoSerializer(serializers.Serializer):
-    txid = serializers.RegexField(r"^[0-9a-fA-F]{64}$", max_length=64)
-    vout = serializers.IntegerField(min_value=0)
-    amount = serializers.DecimalField(max_digits=18, decimal_places=8, min_value=0)
-    confirmations = serializers.IntegerField(min_value=0, required=False, default=0)
-    script_pub_key = serializers.RegexField(r"^[0-9a-fA-F]+$", max_length=200)
-
-
-# P2WPKH dust limit（294 satoshi），低于此值的输出会被全节点拒绝广播。
-# P2WPKH 输出的 dust 阈值低于 P2PKH（546），因为 SegWit 输入花费成本更低。
-_BTC_DUST_LIMIT = 294
-
-
-class SignBitcoinSerializer(serializers.Serializer):
-    wallet_id = serializers.IntegerField(min_value=1)
-    chain_type = serializers.ChoiceField(choices=[ChainType.BITCOIN])
-    bip44_account = serializers.IntegerField(
-        min_value=0, max_value=settings.SIGNER_MAX_BIP44_ACCOUNT
-    )
-    address_index = serializers.IntegerField(
-        min_value=0, max_value=settings.SIGNER_MAX_ADDRESS_INDEX
-    )
-    source_address = serializers.CharField()
-    to = serializers.CharField()
-    amount_satoshi = serializers.IntegerField(min_value=_BTC_DUST_LIMIT)
-    fee_satoshi = serializers.IntegerField(min_value=1)
-    replaceable = serializers.BooleanField(required=False, default=False)
-    utxos = BitcoinUtxoSerializer(many=True, allow_empty=False)
-
-    def validate_to(self, value):
-        if not is_valid_bitcoin_address(value):
-            raise serializers.ValidationError("目标地址格式无效")
         return value
 
 
@@ -633,138 +600,3 @@ class SignEvmView(SignerAPIView):
         )
 
 
-class SignBitcoinView(SignerAPIView):
-    @staticmethod
-    def _build_and_sign_segwit_tx(
-        *,
-        privkey_hex: str,
-        source_address: str,
-        to: str,
-        amount_satoshi: int,
-        fee_satoshi: int,
-        replaceable: bool,
-        utxos: list[dict],
-    ) -> tuple[str, str]:
-        """构建并签名 P2WPKH SegWit 交易，返回 (txid, signed_hex)。
-
-        找零逻辑显式处理：
-        - change > dust_limit → 创建找零输出
-        - 0 < change <= dust_limit → 并入 fee
-        - change == 0 → 无找零（sweep）
-        - change < 0 → 拒绝签名
-        """
-        from bitcoinutils.keys import P2pkhAddress
-        from bitcoinutils.keys import P2shAddress
-        from bitcoinutils.keys import P2wpkhAddress
-        from bitcoinutils.keys import PrivateKey
-        from bitcoinutils.transactions import Transaction
-        from bitcoinutils.transactions import TxInput
-        from bitcoinutils.transactions import TxOutput
-        from bitcoinutils.transactions import TxWitnessInput
-        from bitcoin_support.utils import classify_bitcoin_address
-
-        # 校验 source_address 必须是 P2WPKH（系统内部地址统一为 Native SegWit）
-        src_addr_type = classify_bitcoin_address(source_address)
-        if src_addr_type != "p2wpkh":
-            raise ValueError(
-                f"source_address 必须是 P2WPKH 地址，实际为 {src_addr_type}"
-            )
-
-        # 构造输入
-        sequence = b"\xfd\xff\xff\xff" if replaceable else b"\xfe\xff\xff\xff"
-        inputs = [
-            TxInput(utxo["txid"], int(utxo["vout"]), sequence=sequence)
-            for utxo in utxos
-        ]
-
-        # 构造目标输出
-        addr_type = classify_bitcoin_address(to)
-        if addr_type == "p2wpkh":
-            target_script = P2wpkhAddress(to).to_script_pub_key()
-        elif addr_type == "p2sh":
-            target_script = P2shAddress(to).to_script_pub_key()
-        else:
-            target_script = P2pkhAddress(to).to_script_pub_key()
-
-        outputs = [TxOutput(amount_satoshi, target_script)]
-
-        # 找零计算
-        total_input = sum(btc_to_satoshi(utxo["amount"]) for utxo in utxos)
-        change = total_input - amount_satoshi - fee_satoshi
-        if change < 0:
-            raise ValueError("UTXO 余额不足以覆盖转账金额与矿工费")
-        if change > _BTC_DUST_LIMIT:
-            change_script = P2wpkhAddress(source_address).to_script_pub_key()
-            outputs.append(TxOutput(change, change_script))
-        # 0 < change <= dust_limit: 并入 fee，不创建找零输出
-
-        # 构建交易
-        tx = Transaction(inputs, outputs, has_segwit=True)
-
-        # 签名所有输入（P2WPKH）
-        secret_exponent = int.from_bytes(
-            bytes.fromhex(privkey_hex), byteorder="big"
-        )
-        key = PrivateKey(secret_exponent=secret_exponent)
-        pub = key.get_public_key()
-        script_code = pub.get_address().to_script_pub_key()
-
-        for i, utxo in enumerate(utxos):
-            utxo_amount = btc_to_satoshi(utxo["amount"])
-            sig = key.sign_segwit_input(tx, i, script_code, utxo_amount)
-            tx.witnesses.append(TxWitnessInput([sig, pub.to_hex()]))
-
-        return tx.get_txid(), tx.serialize()
-
-    def post(self, request):
-        self._assert_authenticated(request)
-        serializer = SignBitcoinSerializer(data=request.data)
-        if not serializer.is_valid():
-            raise SignerAPIError(ErrorCode.PARAMETER_ERROR, str(serializer.errors))
-
-        data = serializer.validated_data
-        wallet = self._load_wallet(data["wallet_id"], for_signing=True)
-        self._assert_wallet_can_sign(wallet=wallet)
-        expected_address, privkey_hex = wallet.derive_key_pair(
-            chain_type=ChainType.BITCOIN,
-            bip44_account=data["bip44_account"],
-            address_index=data["address_index"],
-        )
-        if expected_address != data["source_address"]:
-            raise SignerAPIError(
-                ErrorCode.ACCESS_DENY,
-                "source_address 与派生路径不匹配",
-            )
-        if not self._is_internal_destination(
-            chain_type=data["chain_type"],
-            address=data["to"],
-        ):
-            self._assert_wallet_sign_rate_limit(wallet=wallet, endpoint=request.path)
-
-        try:
-            txid, signed_payload = self._build_and_sign_segwit_tx(
-                privkey_hex=privkey_hex,
-                source_address=data["source_address"],
-                to=data["to"],
-                amount_satoshi=data["amount_satoshi"],
-                fee_satoshi=data["fee_satoshi"],
-                replaceable=data["replaceable"],
-                utxos=data["utxos"],
-            )
-        except Exception:
-            raise SignerAPIError(
-                ErrorCode.PARAMETER_ERROR,
-                "Bitcoin 交易签名失败",
-            ) from None
-
-        self._record_audit(
-            request=request,
-            status_value=SignerRequestAudit.Status.SUCCEEDED,
-        )
-        return Response(
-            {
-                "txid": txid,
-                "signed_payload": signed_payload,
-            },
-            status=status.HTTP_200_OK,
-        )

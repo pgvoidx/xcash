@@ -1,75 +1,28 @@
-import threading
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import PropertyMock
 from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
-from django.db import connections
-from django.db import close_old_connections
 from django.test import SimpleTestCase
 from django.test import TestCase
-from django.test import TransactionTestCase
 from django.utils import timezone
 
 from bitcoin.adapter import BitcoinAdapter
 from bitcoin.admin import BitcoinScanCursorAdmin
-from bitcoin.models import BitcoinBroadcastTask
-from bitcoin.models import BitcoinReservedUtxo
 from bitcoin.models import BitcoinScanCursor
 from bitcoin.rpc import BitcoinRpcError
 from bitcoin.scanner.receipt import BitcoinReceiptScanner
 from bitcoin.scanner.service import BitcoinChainScannerService
 from bitcoin.scanner.service import BitcoinScanSummary
 from chains.adapters import TxCheckStatus
-from chains.models import AddressUsage
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
-from chains.models import BroadcastTask
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
-from chains.models import TransferStatus
-from chains.models import TransferType
 from chains.models import Wallet
-from django.core.cache import cache as _cache
-from chains.test_signer import build_test_remote_signer_backend
 from currencies.models import Crypto
-from deposits.models import Deposit
-from deposits.models import DepositAddress
-from deposits.models import DepositCollection
-from deposits.models import DepositStatus
 from projects.models import Project
 from projects.models import RecipientAddress
 from users.models import Customer
-from users.models import User
-from users.otp import build_admin_approval_context
-from withdrawals.models import Withdrawal
-from withdrawals.models import WithdrawalStatus
-
-_BITCOIN_TEST_PATCHERS = []
-
-
-def setUpModule():
-    # 测试前先清空 Redis 锁，避免前一轮联调残留的账户锁污染当前 signer 回归。
-    _cache.clear()
-    backend = build_test_remote_signer_backend()
-    # Bitcoin 测试仍然走“主应用调用 signer”的链路，只是把远端容器替换成进程内假体。
-    for target in (
-        "chains.signer.get_signer_backend",
-        "bitcoin.models.get_signer_backend",
-    ):
-        patcher = patch(target, return_value=backend)
-        patcher.start()
-        _BITCOIN_TEST_PATCHERS.append(patcher)
-
-
-def tearDownModule():
-    while _BITCOIN_TEST_PATCHERS:
-        _BITCOIN_TEST_PATCHERS.pop().stop()
-    _cache.clear()
 
 
 class BitcoinRpcClientTests(SimpleTestCase):
@@ -174,28 +127,19 @@ class BitcoinScannerTests(TestCase):
             confirm_block_count=1,
         )
 
-    def test_watch_set_includes_deposit_and_recipient_addresses(self):
-        # Bitcoin 扫描器必须同时关注充币地址和项目收款地址，否则会漏掉系统真实入账。
-        project = Project.objects.create(
-            name="btc-watch-project",
-            wallet=Wallet.generate(),
-        )
-        customer = Customer.objects.create(project=project, uid="btc-watch-customer")
-        deposit_address = DepositAddress.get_address(self.chain, customer)
-        recipient = RecipientAddress.objects.create(
-            name="btc-recipient",
-            project=project,
-            chain_type=ChainType.BITCOIN,
-            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-        )
-
+    @patch("projects.models.RecipientAddress.objects")
+    def test_watch_set_only_loads_recipient_addresses(self, recipient_qs_mock):
+        # Bitcoin 扫描器只关注项目收款地址（Invoice 支付地址），不包含充币地址。
         from bitcoin.scanner.watchers import load_watch_set
 
-        watch_set = load_watch_set()
+        recipient_qs_mock.filter.return_value.values_list.return_value = [
+            "bc1qexample",
+        ]
 
-        self.assertIn(deposit_address, watch_set.watched_addresses)
-        self.assertIn(recipient.address, watch_set.watched_addresses)
-        self.assertIn(recipient.address, watch_set.recipient_addresses)
+        watched = load_watch_set()
+
+        self.assertIn("bc1qexample", watched)
+        recipient_qs_mock.filter.assert_called_once_with(chain_type=ChainType.BITCOIN)
 
     def test_chain_scanner_service_wraps_receipt_scan_result(self):
         # 链级入口只负责编排 Bitcoin 收款扫描，并把结果折叠成统一摘要对象。
@@ -271,10 +215,7 @@ class BitcoinScannerTests(TestCase):
     ):
         # BTC 扫描必须把推进位置落库，避免长时间停机后只能靠最近窗口猜测补扫。
         watched_address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
-        load_watch_set_mock.return_value = SimpleNamespace(
-            watched_addresses=frozenset({watched_address}),
-            recipient_addresses=frozenset({watched_address}),
-        )
+        load_watch_set_mock.return_value = frozenset({watched_address})
         get_block_count_mock.return_value = 5
         get_block_hash_mock.side_effect = lambda height: f"block-{height}"
         get_block_mock.side_effect = lambda block_hash: {
@@ -325,10 +266,7 @@ class BitcoinScannerTests(TestCase):
     ):
         # 主游标推进后仍要回退一小段尾部重扫，以覆盖轻微重组，同时不能重复建单。
         watched_address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
-        load_watch_set_mock.return_value = SimpleNamespace(
-            watched_addresses=frozenset({watched_address}),
-            recipient_addresses=frozenset({watched_address}),
-        )
+        load_watch_set_mock.return_value = frozenset({watched_address})
         get_block_count_mock.return_value = 30
         get_block_hash_mock.side_effect = lambda height: f"block-{height}"
         get_block_mock.side_effect = lambda block_hash: {
@@ -395,10 +333,7 @@ class BitcoinScannerTests(TestCase):
             enabled=False,
         )
         get_block_count_mock.return_value = 99
-        load_watch_set_mock.return_value = SimpleNamespace(
-            watched_addresses=frozenset(),
-            recipient_addresses=frozenset(),
-        )
+        load_watch_set_mock.return_value = frozenset()
 
         created_count = BitcoinReceiptScanner.scan_recent_receipts(self.chain)
 
@@ -409,41 +344,24 @@ class BitcoinScannerTests(TestCase):
         self.assertEqual(cursor.last_scanned_block, 12)
         self.assertEqual(cursor.last_safe_block, 10)
 
-    def test_should_track_output_filters_change_and_non_recipient_internal_flow(self):
-        # BTC 首版只接收安全场景，内部找零和内部流向非项目收款地址都不应误判为入账。
-        internal_addresses = frozenset({"internal-deposit", "project-recipient"})
-        recipient_addresses = frozenset({"project-recipient"})
-
+    def test_should_track_output_filters_self_sends(self):
+        # 砍掉充提后，只需过滤自发自收；sender 为空串时自动放行。
         self.assertFalse(
             BitcoinReceiptScanner._should_track_output(
-                sender_address="internal-deposit",
-                recipient_address="internal-deposit",
-                internal_addresses=internal_addresses,
-                recipient_addresses=recipient_addresses,
-            )
-        )
-        self.assertFalse(
-            BitcoinReceiptScanner._should_track_output(
-                sender_address="internal-deposit",
-                recipient_address="another-internal",
-                internal_addresses=internal_addresses | {"another-internal"},
-                recipient_addresses=recipient_addresses,
+                sender_address="same-address",
+                recipient_address="same-address",
             )
         )
         self.assertTrue(
             BitcoinReceiptScanner._should_track_output(
                 sender_address="external-address",
-                recipient_address="internal-deposit",
-                internal_addresses=internal_addresses,
-                recipient_addresses=recipient_addresses,
+                recipient_address="project-recipient",
             )
         )
         self.assertTrue(
             BitcoinReceiptScanner._should_track_output(
-                sender_address="internal-deposit",
+                sender_address="",
                 recipient_address="project-recipient",
-                internal_addresses=internal_addresses,
-                recipient_addresses=recipient_addresses,
             )
         )
 
@@ -493,259 +411,6 @@ class BitcoinTaskTests(TestCase):
 
         scan_chain_mock.assert_called_once_with(chain=bitcoin_chain)
 
-    @patch("bitcoin.tasks.BitcoinBroadcastTransferObserver.observe_chain")
-    @patch("bitcoin.tasks.BitcoinChainScannerService.scan_chain")
-    def test_scan_bitcoin_receipts_skips_disabled_chain_cursor_entirely(
-        self,
-        scan_chain_mock,
-        observe_chain_mock,
-    ):
-        # 游标被禁用时，整条 BTC 扫描任务都应停下，
-        # 既不能继续做收款扫描，也不能继续补录内部出账。
-        from bitcoin.tasks import scan_bitcoin_receipts
-
-        native = Crypto.objects.create(
-            name="Bitcoin Task Disabled",
-            symbol="BTCDIS",
-            coingecko_id="bitcoin-task-disabled",
-            decimals=8,
-        )
-        chain = Chain.objects.create(
-            code="btc-disabled",
-            name="Bitcoin Disabled",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.disabled",
-            native_coin=native,
-            active=True,
-        )
-        BitcoinScanCursor.objects.create(
-            chain=chain,
-            last_scanned_block=15,
-            last_safe_block=12,
-            enabled=False,
-        )
-
-        scan_bitcoin_receipts.run()
-
-        scan_chain_mock.assert_not_called()
-        observe_chain_mock.assert_not_called()
-
-    @patch("withdrawals.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    @patch("bitcoin.rpc.BitcoinRpcClient.get_block")
-    @patch("bitcoin.rpc.BitcoinRpcClient.get_raw_transaction")
-    @patch("bitcoin.tasks.BitcoinChainScannerService.scan_chain")
-    def test_scan_bitcoin_receipts_observes_pending_withdrawal_tasks(
-        self,
-        scan_chain_mock,
-        get_raw_transaction_mock,
-        get_block_mock,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # BTC 出账进入区块后，定时扫描必须能补出 OnchainTransfer，
-        # 否则 Withdrawal 永远无法从 PENDING 进入 CONFIRMING。
-        from bitcoin.tasks import scan_bitcoin_receipts
-
-        native = Crypto.objects.create(
-            name="Bitcoin Task Observe",
-            symbol="BTCO",
-            coingecko_id="bitcoin-task-observe",
-            decimals=8,
-        )
-        chain = Chain.objects.create(
-            code="btc-observe",
-            name="Bitcoin Observe",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.observe",
-            native_coin=native,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="btc-observe-project",
-            wallet=Wallet.generate(),
-        )
-        vault = project.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-        tx_hash = "ab" * 32
-        recipient = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
-
-        base_task = BroadcastTask.objects.create(
-            chain=chain,
-            address=vault,
-            transfer_type=TransferType.Withdrawal,
-            crypto=native,
-            recipient=recipient,
-            amount=Decimal("0.01"),
-            tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        BitcoinBroadcastTask.objects.create(
-            base_task=base_task,
-            address=vault,
-            chain=chain,
-            signed_payload="signed-payload",
-            fee_satoshi=500,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="btc-observe-withdrawal",
-            chain=chain,
-            crypto=native,
-            amount=Decimal("0.01"),
-            to=recipient,
-            hash=tx_hash,
-            broadcast_task=base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        scan_chain_mock.return_value = BitcoinScanSummary(created_receipts=0)
-        get_raw_transaction_mock.return_value = {
-            "txid": tx_hash,
-            "blockhash": "block-1",
-            "blocktime": 1_700_000_000,
-            "vout": [
-                {
-                    "n": 0,
-                    "value": "0.01",
-                    "scriptPubKey": {"address": recipient},
-                }
-            ],
-        }
-        get_block_mock.return_value = {
-            "height": 12,
-            "time": 1_700_000_000,
-        }
-
-        scan_bitcoin_receipts.run()
-
-        transfer = OnchainTransfer.objects.get(
-            chain=chain,
-            hash=tx_hash,
-            event_id="vout:0",
-        )
-        self.assertEqual(transfer.from_address, vault.address)
-        self.assertEqual(transfer.to_address, recipient)
-
-        transfer.process()
-        withdrawal.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-
-    @patch("chains.tasks.process_transfer.apply_async")
-    @patch("bitcoin.rpc.BitcoinRpcClient.get_block")
-    @patch("bitcoin.rpc.BitcoinRpcClient.get_raw_transaction")
-    @patch("bitcoin.rpc.BitcoinRpcClient.get_transaction")
-    def test_broadcast_observer_uses_old_tx_hash_history_after_fee_replacement(
-        self,
-        get_transaction_mock,
-        get_raw_transaction_mock,
-        get_block_mock,
-        _process_transfer_mock,
-    ):
-        # 手工 RBF 后如果旧 tx 反而先被矿工打包，observer 仍必须能通过 tx_hash 历史补录。
-        from bitcoin.scanner.broadcast import BitcoinBroadcastTransferObserver
-
-        native = Crypto.objects.create(
-            name="Bitcoin Task Observe History",
-            symbol="BTCOH",
-            coingecko_id="bitcoin-task-observe-history",
-            decimals=8,
-        )
-        chain = Chain.objects.create(
-            code="btc-observe-history",
-            name="Bitcoin Observe History",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.observe.history",
-            native_coin=native,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="btc-observe-history-project",
-            wallet=Wallet.generate(),
-        )
-        vault = project.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-        old_hash = "cd" * 32
-        new_hash = "ef" * 32
-        recipient = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
-
-        base_task = BroadcastTask.objects.create(
-            chain=chain,
-            address=vault,
-            transfer_type=TransferType.Withdrawal,
-            crypto=native,
-            recipient=recipient,
-            amount=Decimal("0.01"),
-            tx_hash=old_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        base_task.create_initial_tx_hash()
-        base_task.append_tx_hash(new_hash)
-        BitcoinBroadcastTask.objects.create(
-            base_task=base_task,
-            address=vault,
-            chain=chain,
-            signed_payload="signed-payload",
-            fee_satoshi=500,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="btc-observe-history-withdrawal",
-            chain=chain,
-            crypto=native,
-            amount=Decimal("0.01"),
-            to=recipient,
-            hash=new_hash,
-            broadcast_task=base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        def raw_tx_side_effect(tx_hash: str):
-            if tx_hash == old_hash:
-                return {
-                    "txid": old_hash,
-                    "blockhash": "block-history-1",
-                    "blocktime": 1_700_000_001,
-                    "vout": [
-                        {
-                            "n": 0,
-                            "value": "0.01",
-                            "scriptPubKey": {"address": recipient},
-                        }
-                    ],
-                }
-            return None
-
-        get_transaction_mock.return_value = None
-        get_raw_transaction_mock.side_effect = raw_tx_side_effect
-        get_block_mock.return_value = {
-            "height": 13,
-            "time": 1_700_000_001,
-        }
-
-        created_count = BitcoinBroadcastTransferObserver.observe_chain(chain=chain)
-
-        self.assertEqual(created_count, 1)
-        transfer = OnchainTransfer.objects.get(
-            chain=chain,
-            hash=old_hash,
-            event_id="vout:0",
-        )
-        transfer.process()
-        withdrawal.refresh_from_db()
-        base_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-        self.assertEqual(withdrawal.hash, old_hash)
-        self.assertEqual(base_task.tx_hash, old_hash)
-
 
 class BitcoinWatchSyncTests(TestCase):
     def setUp(self):
@@ -764,30 +429,18 @@ class BitcoinWatchSyncTests(TestCase):
             active=True,
             confirm_block_count=1,
         )
-        self.project = Project.objects.create(
-            name="btc-sync-project",
-            wallet=Wallet.generate(),
-        )
+        with patch("chains.signer.RemoteSignerBackend.create_wallet", return_value=1):
+            self.project = Project.objects.create(
+                name="btc-sync-project",
+            )
         self.customer = Customer.objects.create(project=self.project, uid="btc-sync-user")
 
-    @patch("bitcoin.tasks.sync_bitcoin_watch_addresses.apply_async")
-    def test_wallet_get_address_schedules_watch_sync_for_new_bitcoin_address(
-        self,
-        apply_async_mock,
-    ):
-        with self.captureOnCommitCallbacks(execute=True):
-            self.project.wallet.get_address(
-                chain_type=ChainType.BITCOIN,
-                usage=AddressUsage.Deposit,
-                address_index=3,
-            )
-
-        apply_async_mock.assert_called_once()
-
+    @patch("common.fields.AddressField.pre_save", return_value="1BoatSLRHtKNngkdXEeobR76b53LETtpyT")
     @patch("bitcoin.tasks.sync_bitcoin_watch_addresses.apply_async")
     def test_saving_bitcoin_recipient_address_schedules_watch_sync(
         self,
         apply_async_mock,
+        _addr_field_mock,
     ):
         with self.captureOnCommitCallbacks(execute=True):
             RecipientAddress.objects.create(
@@ -801,827 +454,35 @@ class BitcoinWatchSyncTests(TestCase):
 
         apply_async_mock.assert_called_once()
 
+    @patch("common.fields.AddressField.pre_save", return_value="1BoatSLRHtKNngkdXEeobR76b53LETtpyT")
     @patch("bitcoin.watch_sync.BitcoinRpcClient.import_descriptor")
     @patch("bitcoin.watch_sync.BitcoinRpcClient.import_address")
-    def test_sync_chain_imports_known_addresses_with_descriptor_fallback(
+    def test_sync_chain_imports_recipient_addresses_with_descriptor_fallback(
         self,
         import_address_mock,
         import_descriptor_mock,
+        _addr_field_mock,
     ):
-        deposit_address = DepositAddress.get_address(self.chain, self.customer)
+        test_address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
         RecipientAddress.objects.create(
             name="btc-sync-import-recipient",
             project=self.project,
             chain_type=ChainType.BITCOIN,
-            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
+            address=test_address,
             used_for_invoice=True,
             used_for_deposit=False,
         )
 
-        import_address_mock.side_effect = [
-            BitcoinRpcError("Only legacy wallets are supported by this command"),
-            None,
-        ]
+        import_address_mock.side_effect = BitcoinRpcError(
+            "Only legacy wallets are supported by this command"
+        )
 
         from bitcoin.watch_sync import BitcoinWatchSyncService
 
         imported_count = BitcoinWatchSyncService.sync_chain(self.chain)
 
-        self.assertEqual(imported_count, 2)
-        self.assertEqual(import_address_mock.call_count, 2)
+        self.assertEqual(imported_count, 1)
+        import_address_mock.assert_called_once()
         import_descriptor_mock.assert_called_once()
         descriptor = import_descriptor_mock.call_args.kwargs["descriptor"]
-        self.assertEqual(descriptor, f"addr({deposit_address})")
-
-
-class BitcoinReservedUtxoTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create(username="btc-utxo-user")
-        self.wallet = Wallet.generate()
-        self.project = Project.objects.create(
-            name="btc-utxo-project",
-            wallet=self.wallet,
-        )
-        self.native = Crypto.objects.create(
-            name="Bitcoin Native",
-            symbol="BTCU",
-            coingecko_id="bitcoin-utxo",
-            decimals=8,
-        )
-        self.chain = Chain.objects.create(
-            code="btc-utxo",
-            name="Bitcoin UTXO",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.local",
-            native_coin=self.native,
-            active=True,
-            confirm_block_count=1,
-        )
-        self.address = self.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-
-    @patch("bitcoin.models.select_utxos_for_amount")
-    @patch("bitcoin.models.get_signer_backend")
-    @patch(
-        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0001"),
-    )
-    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    def test_schedule_transfer_excludes_reserved_utxo_and_reserves_selected_input(
-        self,
-        list_unspent_mock,
-        _estimate_fee_mock,
-        get_signer_backend_mock,
-        select_utxos_mock,
-    ):
-        # 已被本地任务预留的 UTXO 不得再次参与选币；新选中的输入必须立即写入预留表。
-        reserved_task = BroadcastTask.objects.create(
-            chain=self.chain,
-            address=self.address,
-            transfer_type=TransferType.Withdrawal,
-            crypto=self.native,
-            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.1"),
-            tx_hash="b" * 64,
-        )
-        BitcoinReservedUtxo.objects.create(
-            chain=self.chain,
-            address=self.address,
-            broadcast_task=reserved_task,
-            txid="utxo-reserved",
-            vout=0,
-        )
-
-        list_unspent_mock.return_value = [
-            {
-                "txid": "utxo-reserved",
-                "vout": 0,
-                "amount": "0.5",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            },
-            {
-                "txid": "utxo-free",
-                "vout": 1,
-                "amount": "1.0",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            },
-        ]
-
-        select_utxos_mock.side_effect = lambda **kwargs: (
-            kwargs["utxos"],
-            120,
-        )
-        signer_backend = SimpleNamespace(
-            sign_bitcoin_transaction=Mock(
-                return_value=SimpleNamespace(
-                    txid="a" * 64,
-                    signed_payload="signed-payload",
-                )
-            )
-        )
-        get_signer_backend_mock.return_value = signer_backend
-
-        task = BitcoinBroadcastTask.schedule_transfer(
-            address=self.address,
-            chain=self.chain,
-            crypto=self.native,
-            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.25"),
-            transfer_type=TransferType.Withdrawal,
-        )
-
-        self.assertEqual(task.base_task.tx_hash, "a" * 64)
-        self.assertEqual(
-            list(
-                BitcoinReservedUtxo.objects.filter(
-                    broadcast_task=task.base_task,
-                    released_at__isnull=True,
-                ).values_list("txid", "vout")
-            ),
-            [("utxo-free", 1)],
-        )
-        select_utxos_mock.assert_called_once()
-        self.assertEqual(
-            select_utxos_mock.call_args.kwargs["utxos"][0]["txid"], "utxo-free"
-        )
-        signer_backend.sign_bitcoin_transaction.assert_called_once()
-        self.assertTrue(
-            signer_backend.sign_bitcoin_transaction.call_args.kwargs.get("replaceable")
-        )
-
-    @patch("chains.models.Balance.update_from_transfer")
-    def test_confirm_releases_reserved_utxos(self, _update_balance_mock):
-        # Bitcoin 转账一旦确认成功，之前为该任务预留的 UTXO 必须释放。
-        base_task = BroadcastTask.objects.create(
-            chain=self.chain,
-            address=self.address,
-            transfer_type=TransferType.Withdrawal,
-            crypto=self.native,
-            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.1"),
-            tx_hash="c" * 64,
-        )
-        BitcoinReservedUtxo.objects.create(
-            chain=self.chain,
-            address=self.address,
-            broadcast_task=base_task,
-            txid="utxo-confirm",
-            vout=2,
-        )
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1,
-            hash="c" * 64,
-            event_id="vout:0",
-            crypto=self.native,
-            from_address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            to_address="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
-            value=Decimal("1000"),
-            amount=Decimal("0.1"),
-            timestamp=1,
-            datetime=timezone.now(),
-            status=TransferStatus.CONFIRMING,
-        )
-
-        with patch("chains.models.timezone.now", return_value=self.chain.created_at):
-            transfer.confirm()
-
-        reservation = BitcoinReservedUtxo.objects.get(broadcast_task=base_task)
-        self.assertIsNotNone(reservation.released_at)
-
-    @patch(
-        "bitcoin.models.select_utxos_for_amount",
-        side_effect=lambda **kwargs: (kwargs["utxos"], 120),
-    )
-    @patch("bitcoin.models.get_signer_backend")
-    @patch(
-        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0001"),
-    )
-    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    def test_second_schedule_transfer_is_blocked_by_db_reserved_utxo_boundary(
-        self,
-        list_unspent_mock,
-        _estimate_fee_mock,
-        get_signer_backend_mock,
-        _select_utxos_mock,
-    ):
-        # 即使节点第二次仍返回同一枚 UTXO，数据库预留也必须阻止系统签出第二笔交易。
-        list_unspent_mock.return_value = [
-            {
-                "txid": "utxo-shared",
-                "vout": 0,
-                "amount": "1.0",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            }
-        ]
-        signer_backend = SimpleNamespace(
-            sign_bitcoin_transaction=Mock(
-                return_value=SimpleNamespace(
-                    txid="d" * 64,
-                    signed_payload="signed-payload",
-                )
-            )
-        )
-        get_signer_backend_mock.return_value = signer_backend
-
-        BitcoinBroadcastTask.schedule_transfer(
-            address=self.address,
-            chain=self.chain,
-            crypto=self.native,
-            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.25"),
-            transfer_type=TransferType.Withdrawal,
-        )
-
-        with self.assertRaisesMessage(ValueError, "无可用未预留 UTXO"):
-            BitcoinBroadcastTask.schedule_transfer(
-                address=self.address,
-                chain=self.chain,
-                crypto=self.native,
-                to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-                amount=Decimal("0.25"),
-                transfer_type=TransferType.Withdrawal,
-            )
-
-    @patch("bitcoin.models.BitcoinRpcClient.send_raw_transaction")
-    def test_broadcast_missing_utxo_marks_withdrawal_failed(
-        self,
-        send_raw_transaction_mock,
-    ):
-        # 输入已花费时，BTC 广播失败必须同步把 Withdrawal 终局为 FAILED。
-        send_raw_transaction_mock.side_effect = BitcoinRpcError(
-            "Bitcoin RPC error (sendrawtransaction): missingorspent"
-        )
-        tx_hash = "f" * 64
-        base_task = BroadcastTask.objects.create(
-            chain=self.chain,
-            address=self.address,
-            transfer_type=TransferType.Withdrawal,
-            crypto=self.native,
-            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.1"),
-            tx_hash=tx_hash,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        task = BitcoinBroadcastTask.objects.create(
-            base_task=base_task,
-            address=self.address,
-            chain=self.chain,
-            signed_payload="signed-payload",
-            fee_satoshi=100,
-        )
-        BitcoinReservedUtxo.objects.create(
-            chain=self.chain,
-            address=self.address,
-            broadcast_task=base_task,
-            txid="utxo-failed",
-            vout=0,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=self.project,
-            out_no="btc-failed-withdrawal",
-            chain=self.chain,
-            crypto=self.native,
-            amount=Decimal("0.1"),
-            to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            hash=tx_hash,
-            broadcast_task=base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        task.broadcast()
-
-        base_task.refresh_from_db()
-        withdrawal.refresh_from_db()
-        reservation = BitcoinReservedUtxo.objects.get(broadcast_task=base_task)
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(base_task.failure_reason, BroadcastTaskFailureReason.DOUBLE_SPEND)
-        self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
-        self.assertIsNotNone(reservation.released_at)
-
-    @patch("bitcoin.models.BitcoinRpcClient.send_raw_transaction")
-    def test_broadcast_missing_utxo_drops_pending_collection(
-        self,
-        send_raw_transaction_mock,
-    ):
-        # BTC 归集广播失败后，占位 DepositCollection 必须释放，否则后续无法重试。
-        send_raw_transaction_mock.side_effect = BitcoinRpcError(
-            "Bitcoin RPC error (sendrawtransaction): txn-mempool-conflict"
-        )
-        customer = Customer.objects.create(project=self.project, uid="btc-collect-user")
-        transfer = OnchainTransfer.objects.create(
-            chain=self.chain,
-            block=1,
-            hash="1" * 64,
-            event_id="vout:0",
-            crypto=self.native,
-            from_address="12cbQLTFMXRnSzktFkuoG3eHoMeFtpTu3S",
-            to_address=self.address.address,
-            value=Decimal("10000000"),
-            amount=Decimal("0.1"),
-            timestamp=1,
-            datetime=timezone.now(),
-            status=TransferStatus.CONFIRMED,
-            type=TransferType.Deposit,
-        )
-        deposit = Deposit.objects.create(
-            customer=customer,
-            transfer=transfer,
-            status=DepositStatus.COMPLETED,
-        )
-        tx_hash = "2" * 64
-        base_task = BroadcastTask.objects.create(
-            chain=self.chain,
-            address=self.address,
-            transfer_type=TransferType.DepositCollection,
-            crypto=self.native,
-            recipient="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            amount=Decimal("0.1"),
-            tx_hash=tx_hash,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        task = BitcoinBroadcastTask.objects.create(
-            base_task=base_task,
-            address=self.address,
-            chain=self.chain,
-            signed_payload="signed-payload",
-            fee_satoshi=100,
-        )
-        collection = DepositCollection.objects.create(
-            collection_hash=tx_hash,
-            broadcast_task=base_task,
-        )
-        deposit.collection = collection
-        deposit.save(update_fields=["collection"])
-
-        task.broadcast()
-
-        deposit.refresh_from_db()
-        base_task.refresh_from_db()
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertFalse(DepositCollection.objects.filter(pk=collection.pk).exists())
-        self.assertIsNone(deposit.collection_id)
-
-
-class BitcoinFeeBumpTests(TestCase):
-    def setUp(self):
-        self.project = Project.objects.create(
-            name="btc-fee-bump-project",
-            wallet=Wallet.generate(),
-        )
-        self.native = Crypto.objects.create(
-            name="Bitcoin Fee Bump",
-            symbol="BTCBUMP",
-            coingecko_id="bitcoin-fee-bump",
-            decimals=8,
-        )
-        self.chain = Chain.objects.create(
-            code="btc-fee-bump",
-            name="Bitcoin Fee Bump",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.bump",
-            native_coin=self.native,
-            active=True,
-            confirm_block_count=1,
-        )
-        self.address = self.project.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-        self.recipient = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
-
-    def _build_signed_payload(self, *, replaceable: bool, fee_satoshi: int = 100) -> str:
-        del fee_satoshi
-        sequence = "fdffffff" if replaceable else "feffffff"
-        return (
-            "01000000"
-            "01"
-            + "00" * 32
-            + "00000000"
-            + "00"
-            + sequence
-            + "01"
-            + "0000000000000000"
-            + "00"
-            + "00000000"
-        )
-
-    def _create_pending_withdrawal(self, *, tx_hash: str = "11" * 32):
-        base_task = BroadcastTask.objects.create(
-            chain=self.chain,
-            address=self.address,
-            transfer_type=TransferType.Withdrawal,
-            crypto=self.native,
-            recipient=self.recipient,
-            amount=Decimal("0.01"),
-            tx_hash=tx_hash,
-            stage=BroadcastTaskStage.PENDING_CHAIN,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        task = BitcoinBroadcastTask.objects.create(
-            base_task=base_task,
-            address=self.address,
-            chain=self.chain,
-            signed_payload=self._build_signed_payload(replaceable=True),
-            fee_satoshi=100,
-        )
-        BitcoinReservedUtxo.objects.create(
-            chain=self.chain,
-            address=self.address,
-            broadcast_task=base_task,
-            txid="aa" * 32,
-            vout=0,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=self.project,
-            out_no=f"btc-fee-bump-{tx_hash[:8]}",
-            chain=self.chain,
-            crypto=self.native,
-            amount=Decimal("0.01"),
-            to=self.recipient,
-            hash=tx_hash,
-            broadcast_task=base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-        return withdrawal, task
-
-    @patch("bitcoin.fee_bump.get_signer_backend")
-    @patch(
-        "bitcoin.fee_bump.BitcoinRpcClient.send_raw_transaction",
-        return_value="22" * 32,
-    )
-    @patch(
-        "bitcoin.fee_bump.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0002"),
-    )
-    @patch("bitcoin.fee_bump.BitcoinRpcClient.get_raw_transaction")
-    def test_fee_bump_service_replaces_hash_payload_and_fee(
-        self,
-        get_raw_transaction_mock,
-        _estimate_fee_mock,
-        send_raw_transaction_mock,
-        get_signer_backend_mock,
-    ):
-        from bitcoin.fee_bump import BitcoinFeeBumpService
-
-        withdrawal, task = self._create_pending_withdrawal()
-
-        def raw_tx_side_effect(tx_hash: str):
-            if tx_hash == "aa" * 32:
-                return {
-                    "txid": tx_hash,
-                    "confirmations": 12,
-                    "vout": [
-                        {
-                            "n": 0,
-                            "value": "0.02",
-                            "scriptPubKey": {"hex": "76a914"},
-                        }
-                    ],
-                }
-            return None
-
-        get_raw_transaction_mock.side_effect = raw_tx_side_effect
-        signer_backend = SimpleNamespace(
-            sign_bitcoin_transaction=Mock(
-                return_value=SimpleNamespace(
-                    txid="22" * 32,
-                    signed_payload="signed-new-payload",
-                )
-            )
-        )
-        get_signer_backend_mock.return_value = signer_backend
-
-        bumped_task = BitcoinFeeBumpService.bump_withdrawal(
-            withdrawal_id=withdrawal.pk,
-            approval_context=build_admin_approval_context(
-                source="test_bitcoin_fee_bump"
-            ),
-        )
-
-        withdrawal.refresh_from_db()
-        task.refresh_from_db()
-        task.base_task.refresh_from_db()
-        self.assertEqual(bumped_task.pk, task.pk)
-        self.assertEqual(task.base_task.tx_hash, "22" * 32)
-        self.assertEqual(task.signed_payload, "signed-new-payload")
-        self.assertGreater(task.fee_satoshi, 100)
-        self.assertEqual(withdrawal.hash, "22" * 32)
-        self.assertEqual(
-            list(
-                task.base_task.tx_hashes.order_by("version").values_list("hash", flat=True)
-            ),
-            ["11" * 32, "22" * 32],
-        )
-        self.assertTrue(
-            signer_backend.sign_bitcoin_transaction.call_args.kwargs.get("replaceable")
-        )
-        send_raw_transaction_mock.assert_called_once_with("signed-new-payload")
-
-    @patch("bitcoin.fee_bump.get_signer_backend")
-    @patch(
-        "bitcoin.fee_bump.BitcoinRpcClient.send_raw_transaction",
-        side_effect=BitcoinRpcError(
-            "Bitcoin RPC error (sendrawtransaction): txn-mempool-conflict"
-        ),
-    )
-    @patch(
-        "bitcoin.fee_bump.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0002"),
-    )
-    @patch("bitcoin.fee_bump.BitcoinRpcClient.get_raw_transaction")
-    def test_fee_bump_service_keeps_current_hash_when_broadcast_result_is_ambiguous(
-        self,
-        get_raw_transaction_mock,
-        _estimate_fee_mock,
-        _send_raw_transaction_mock,
-        get_signer_backend_mock,
-    ):
-        from bitcoin.fee_bump import BitcoinFeeBumpService
-
-        withdrawal, task = self._create_pending_withdrawal(tx_hash="33" * 32)
-
-        def raw_tx_side_effect(tx_hash: str):
-            if tx_hash == "aa" * 32:
-                return {
-                    "txid": tx_hash,
-                    "confirmations": 12,
-                    "vout": [
-                        {
-                            "n": 0,
-                            "value": "0.02",
-                            "scriptPubKey": {"hex": "76a914"},
-                        }
-                    ],
-                }
-            return None
-
-        get_raw_transaction_mock.side_effect = raw_tx_side_effect
-        signer_backend = SimpleNamespace(
-            sign_bitcoin_transaction=Mock(
-                return_value=SimpleNamespace(
-                    txid="44" * 32,
-                    signed_payload="signed-ambiguous-payload",
-                )
-            )
-        )
-        get_signer_backend_mock.return_value = signer_backend
-
-        with self.assertRaisesMessage(ValueError, "txn-mempool-conflict"):
-            BitcoinFeeBumpService.bump_withdrawal(
-                withdrawal_id=withdrawal.pk,
-                approval_context=build_admin_approval_context(
-                    source="test_bitcoin_fee_bump"
-                ),
-            )
-
-        withdrawal.refresh_from_db()
-        task.refresh_from_db()
-        task.base_task.refresh_from_db()
-        self.assertEqual(task.base_task.tx_hash, "33" * 32)
-        self.assertEqual(task.signed_payload, self._build_signed_payload(replaceable=True))
-        self.assertEqual(task.fee_satoshi, 100)
-        self.assertEqual(withdrawal.hash, "33" * 32)
-        self.assertEqual(task.base_task.tx_hashes.count(), 0)
-
-    @patch("bitcoin.models.BitcoinRpcClient.send_raw_transaction")
-    def test_stale_broadcast_conflict_does_not_finalize_replaced_task(
-        self,
-        send_raw_transaction_mock,
-    ):
-        send_raw_transaction_mock.side_effect = BitcoinRpcError(
-            "Bitcoin RPC error (sendrawtransaction): txn-mempool-conflict"
-        )
-        _withdrawal, task = self._create_pending_withdrawal(tx_hash="55" * 32)
-        stale_task = BitcoinBroadcastTask.objects.select_related("base_task").get(
-            pk=task.pk
-        )
-        _ = stale_task.base_task.tx_hash
-
-        task.base_task.create_initial_tx_hash()
-        task.base_task.append_tx_hash("66" * 32)
-        BitcoinBroadcastTask.objects.filter(pk=task.pk).update(
-            signed_payload="signed-replaced-payload",
-            fee_satoshi=999,
-        )
-
-        stale_task.broadcast()
-
-        task.refresh_from_db()
-        task.base_task.refresh_from_db()
-        self.assertEqual(task.base_task.tx_hash, "66" * 32)
-        self.assertEqual(task.base_task.result, BroadcastTaskResult.UNKNOWN)
-        self.assertEqual(task.base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
-
-
-class BitcoinUtxoConcurrencyTests(TransactionTestCase):
-    """多线程并发创建 BitcoinBroadcastTask，验证 UTXO 预留的互斥性。
-
-    Bitcoin 的 schedule_transfer 在原子事务内调用 RPC 和 signer，
-    需要 mock 掉 BitcoinRpcClient 和 signer（module-level 已 patch）。
-    """
-
-    THREAD_COUNT = 5
-
-    def setUp(self):
-        self.wallet = Wallet.generate()
-        self.project = Project.objects.create(
-            name="btc-concurrency-project",
-            wallet=self.wallet,
-        )
-        self.native = Crypto.objects.create(
-            name="Bitcoin Concurrency",
-            symbol="BTCCC",
-            coingecko_id="bitcoin-concurrency",
-            decimals=8,
-        )
-        self.chain = Chain.objects.create(
-            code="btc-concurrency",
-            name="Bitcoin Concurrency",
-            type=ChainType.BITCOIN,
-            rpc="http://bitcoin.local",
-            native_coin=self.native,
-            active=True,
-            confirm_block_count=1,
-        )
-        self.address = self.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-
-    @staticmethod
-    def _make_mock_signer():
-        """返回一个线程安全的 mock signer，每次调用产生唯一 txid。"""
-        import itertools
-
-        counter = itertools.count()
-
-        def sign_bitcoin_transaction(**kwargs):
-            idx = next(counter)
-            return SimpleNamespace(
-                txid=f"{idx:0>2x}" * 32,
-                signed_payload=f"signed-payload-{idx}",
-            )
-
-        return SimpleNamespace(
-            sign_bitcoin_transaction=sign_bitcoin_transaction,
-        )
-
-    @patch("bitcoin.models.get_signer_backend")
-    @patch("bitcoin.models.select_utxos_for_amount")
-    @patch(
-        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0001"),
-    )
-    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    def test_concurrent_schedule_transfer_with_single_utxo_only_one_succeeds(
-        self,
-        list_unspent_mock,
-        _estimate_fee_mock,
-        select_utxos_mock,
-        get_signer_mock,
-    ):
-        """同一个 UTXO 被 N 个线程争抢，只有 1 个能成功预留。"""
-        get_signer_mock.return_value = self._make_mock_signer()
-        list_unspent_mock.return_value = [
-            {
-                "txid": "aa" * 32,
-                "vout": 0,
-                "amount": "1.0",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            }
-        ]
-        select_utxos_mock.side_effect = lambda **kwargs: (kwargs["utxos"], 120)
-
-        barrier = threading.Barrier(self.THREAD_COUNT)
-        successes: list[int] = []
-        value_errors: list[ValueError] = []
-        other_errors: list[Exception] = []
-
-        def schedule(thread_idx: int) -> None:
-            close_old_connections()
-            try:
-                barrier.wait(timeout=5)
-                task = BitcoinBroadcastTask.schedule_transfer(
-                    address=self.address,
-                    chain=self.chain,
-                    crypto=self.native,
-                    to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-                    amount=Decimal("0.1"),
-                    transfer_type=TransferType.Withdrawal,
-                )
-                successes.append(task.pk)
-            except ValueError as exc:
-                value_errors.append(exc)
-            except Exception as exc:
-                other_errors.append(exc)
-            finally:
-                connections.close_all()
-
-        threads = [
-            threading.Thread(target=schedule, args=(i,))
-            for i in range(self.THREAD_COUNT)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-
-        self.assertFalse(other_errors, f"非预期异常: {other_errors}")
-        self.assertEqual(len(successes), 1, f"只应有 1 个线程成功, value_errors={[str(e) for e in value_errors]}")
-        self.assertEqual(
-            len(value_errors),
-            self.THREAD_COUNT - 1,
-            f"应有 {self.THREAD_COUNT - 1} 个线程因无可用 UTXO 失败",
-        )
-        self.assertEqual(BitcoinBroadcastTask.objects.count(), 1)
-        self.assertEqual(
-            BitcoinReservedUtxo.objects.filter(released_at__isnull=True).count(),
-            1,
-        )
-
-    @patch("bitcoin.models.get_signer_backend")
-    @patch("bitcoin.models.select_utxos_for_amount")
-    @patch(
-        "bitcoin.models.BitcoinRpcClient.estimate_smart_fee",
-        return_value=Decimal("0.0001"),
-    )
-    @patch("bitcoin.models.BitcoinRpcClient.list_unspent")
-    def test_concurrent_schedule_transfer_with_sufficient_utxos_all_succeed(
-        self,
-        list_unspent_mock,
-        _estimate_fee_mock,
-        select_utxos_mock,
-        get_signer_mock,
-    ):
-        """N 个可用 UTXO 被 N 个线程并发消费，每个线程各占一个，全部成功。"""
-        get_signer_mock.return_value = self._make_mock_signer()
-        all_utxos = [
-            {
-                "txid": f"{i:0>2x}" * 32,
-                "vout": 0,
-                "amount": "1.0",
-                "confirmations": 10,
-                "scriptPubKey": "76a914",
-            }
-            for i in range(self.THREAD_COUNT)
-        ]
-        list_unspent_mock.return_value = all_utxos
-        # 每次选币都取传入列表的第一个（行锁串行化后，已预留的会被 exclude_reserved 过滤掉）
-        select_utxos_mock.side_effect = lambda **kwargs: (
-            kwargs["utxos"][:1],
-            120,
-        )
-
-        barrier = threading.Barrier(self.THREAD_COUNT)
-        successes: list[int] = []
-        errors: list[Exception] = []
-
-        def schedule(thread_idx: int) -> None:
-            close_old_connections()
-            try:
-                barrier.wait(timeout=5)
-                task = BitcoinBroadcastTask.schedule_transfer(
-                    address=self.address,
-                    chain=self.chain,
-                    crypto=self.native,
-                    to="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-                    amount=Decimal("0.1"),
-                    transfer_type=TransferType.Withdrawal,
-                )
-                successes.append(task.pk)
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                connections.close_all()
-
-        threads = [
-            threading.Thread(target=schedule, args=(i,))
-            for i in range(self.THREAD_COUNT)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-
-        self.assertFalse(errors, f"线程异常: {errors}")
-        self.assertEqual(len(successes), self.THREAD_COUNT)
-        self.assertEqual(BitcoinBroadcastTask.objects.count(), self.THREAD_COUNT)
-
-        # 所有活跃预留的 (txid, vout) 必须互不重复
-        reserved = list(
-            BitcoinReservedUtxo.objects.filter(
-                released_at__isnull=True,
-            ).values_list("txid", "vout")
-        )
-        self.assertEqual(len(reserved), self.THREAD_COUNT)
-        self.assertEqual(len(set(reserved)), self.THREAD_COUNT)
+        self.assertEqual(descriptor, f"addr({test_address})")

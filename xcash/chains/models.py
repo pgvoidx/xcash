@@ -426,7 +426,6 @@ class Address(UndeletableModel):
         """使用本账户私钥签名并发送转账，返回 tx hash / signature。
 
         EVM：仅创建内部任务，首次广播时才生成首个 tx_hash。
-        Bitcoin：BitcoinBroadcastTask 签名入库（UTXO 消耗），广播由 on_commit 触发，txid 立即可用。
         """
         if chain.type == ChainType.EVM:
             # EvmBroadcastTask 内部管理锁，不在此处获取，避免双重加锁。
@@ -441,26 +440,6 @@ class Address(UndeletableModel):
                 to=to,
                 value_raw=value_raw,
                 transfer_type=transfer_type,
-            )
-            return task.base_task.tx_hash
-
-        if chain.type == ChainType.BITCOIN:
-            # Bitcoin：BitcoinBroadcastTask 内部管理锁，签名后 txid 立即可用
-            from bitcoin.models import BitcoinBroadcastTask
-            from bitcoin.tasks import broadcast_bitcoin_broadcast_task
-
-            task = BitcoinBroadcastTask.schedule_transfer(
-                address=self,
-                chain=chain,
-                crypto=crypto,
-                to=to,
-                amount=amount,
-                transfer_type=transfer_type,
-            )
-            db_transaction.on_commit(
-                lambda: broadcast_bitcoin_broadcast_task.apply_async(
-                    args=(task.pk,), countdown=1
-                )
             )
             return task.base_task.tx_hash
 
@@ -1027,14 +1006,6 @@ class OnchainTransfer(models.Model):
         )
         # 统一父任务在确认后进入稳定成功终局；业务层不需要感知广播细节。
         BroadcastTask.mark_finalized_success(chain=self.chain, tx_hash=self.hash)
-        if self.chain.type == ChainType.BITCOIN:
-            # Bitcoin UTXO 一旦确认成功，就可以释放该任务对输入集合的数据库预留。
-            from bitcoin.models import BitcoinReservedUtxo
-
-            BitcoinReservedUtxo.release_for_broadcast_task_id_by_hash(
-                chain_id=self.chain_id,
-                tx_hash=self.hash,
-            )
         # EVM broadcast_task 的 completed 表示整笔链上交易生命周期结束，确认后统一收口。
         self._mark_evm_broadcast_task_completed()
 

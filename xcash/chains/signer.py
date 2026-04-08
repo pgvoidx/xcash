@@ -11,7 +11,6 @@ import httpx
 from django.conf import settings
 
 if TYPE_CHECKING:
-    from bitcoin.rpc import BitcoinUtxo
     from chains.models import Address
     from chains.models import Chain
     from chains.models import Wallet
@@ -21,12 +20,6 @@ if TYPE_CHECKING:
 class EvmSignedPayload:
     tx_hash: str
     raw_transaction: str
-
-
-@dataclass(frozen=True)
-class BitcoinSignedPayload:
-    txid: str
-    signed_payload: str
 
 
 @dataclass(frozen=True)
@@ -90,21 +83,6 @@ class SignerBackend:
         tx_dict: dict,
     ) -> EvmSignedPayload:
         raise NotImplementedError
-
-    def sign_bitcoin_transaction(
-        self,
-        *,
-        address: Address,
-        chain: Chain,
-        source_address: str,
-        to: str,
-        amount_satoshi: int,
-        fee_satoshi: int,
-        replaceable: bool,
-        utxos: list[BitcoinUtxo],
-    ) -> BitcoinSignedPayload:
-        raise NotImplementedError
-
 
 class RemoteSignerBackend(SignerBackend):
     def __init__(self, *, base_url: str, timeout: float, shared_secret: str):
@@ -255,53 +233,6 @@ class RemoteSignerBackend(SignerBackend):
         return EvmSignedPayload(
             tx_hash=_normalize_hex(str(tx_hash)),
             raw_transaction=_normalize_hex(str(raw_transaction)),
-        )
-
-    def sign_bitcoin_transaction(
-        self,
-        *,
-        address: Address,
-        chain: Chain,
-        source_address: str,
-        to: str,
-        amount_satoshi: int,
-        fee_satoshi: int,
-        replaceable: bool,
-        utxos: list[BitcoinUtxo],
-    ) -> BitcoinSignedPayload:
-        normalized_utxos = [
-            {
-                **utxo,
-                "script_pub_key": utxo.get("script_pub_key")
-                or utxo.get("scriptPubKey"),
-            }
-            for utxo in utxos
-        ]
-        payload = self._post_json(
-            path="/v1/sign/bitcoin",
-            request_body={
-                "wallet_id": address.wallet_id,
-                "chain_type": address.chain_type,
-                "bip44_account": address.bip44_account,
-                "address_index": address.address_index,
-                "source_address": source_address,
-                "to": to,
-                "amount_satoshi": amount_satoshi,
-                "fee_satoshi": fee_satoshi,
-                "replaceable": replaceable,
-                "utxos": normalized_utxos,
-            },
-        )
-        try:
-            txid = payload.get("txid")
-            signed_payload = payload.get("signed_payload")
-        except AttributeError as exc:
-            raise SignerServiceError("远端 signer 返回格式无效") from exc
-        if not txid or not signed_payload:
-            raise SignerServiceError("远端 signer 返回缺少 txid 或 signed_payload")
-        return BitcoinSignedPayload(
-            txid=str(txid),
-            signed_payload=str(signed_payload),
         )
 
     def fetch_admin_summary(self) -> SignerAdminSummary:

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 from typing import TypedDict
 from typing import cast
 
 import httpx
-
-from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-from bitcoin.constants import BTC_FEE_TARGET_BLOCKS
-from bitcoin.constants import SATOSHI_PER_BTC
 
 
 class BitcoinRpcError(RuntimeError):
@@ -19,15 +14,6 @@ class BitcoinRpcError(RuntimeError):
 class BitcoinRpcErrorPayload(TypedDict, total=False):
     code: int
     message: str
-
-
-class BitcoinUtxo(TypedDict, total=False):
-    txid: str
-    vout: int
-    amount: float | str
-    confirmations: int
-    height: int
-    scriptPubKey: str
 
 
 class BitcoinScriptPubKey(TypedDict, total=False):
@@ -78,13 +64,15 @@ class BitcoinRpcClient:
             raise ValueError(msg)
         self.rpc_url = rpc_url
 
-    def _call(self, method: str, params: list[Any] | None = None) -> Any:
+    def _call(
+        self, method: str, params: list[Any] | dict[str, Any] | None = None
+    ) -> Any:
         """执行 Bitcoin Core JSON-RPC 调用，返回 result；错误时抛出 BitcoinRpcError。"""
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
-            "params": params or [],
+            "params": params if params is not None else [],
         }
         try:
             resp = httpx.post(
@@ -134,14 +122,37 @@ class BitcoinRpcClient:
         *,
         disable_private_keys: bool = False,
         blank: bool = False,
+        load_on_startup: bool = True,
     ) -> dict[str, Any]:
         return cast(
             "dict[str, Any]",
-            self._call("createwallet", [wallet_name, disable_private_keys, blank]),
+            self._call(
+                "createwallet",
+                {
+                    "wallet_name": wallet_name,
+                    "disable_private_keys": disable_private_keys,
+                    "blank": blank,
+                    "load_on_startup": load_on_startup,
+                },
+            ),
         )
 
-    def load_wallet(self, wallet_name: str) -> dict[str, Any]:
-        return cast("dict[str, Any]", self._call("loadwallet", [wallet_name]))
+    def load_wallet(
+        self, wallet_name: str, *, load_on_startup: bool = True
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._call(
+                "loadwallet",
+                {"filename": wallet_name, "load_on_startup": load_on_startup},
+            ),
+        )
+
+    def unload_wallet(self, wallet_name: str) -> dict[str, Any]:
+        return cast("dict[str, Any]", self._call("unloadwallet", [wallet_name]))
+
+    def get_wallet_info(self) -> dict[str, Any]:
+        return cast("dict[str, Any]", self._call("getwalletinfo"))
 
     def get_new_address(self, label: str = "", address_type: str = "legacy") -> str:
         return cast("str", self._call("getnewaddress", [label, address_type]))
@@ -188,7 +199,7 @@ class BitcoinRpcClient:
     def get_descriptor_info(self, descriptor: str) -> dict[str, Any]:
         return cast("dict[str, Any]", self._call("getdescriptorinfo", [descriptor]))
 
-    def send_to_address(self, address: str, amount_btc: Decimal | float | str) -> str:
+    def send_to_address(self, address: str, amount_btc: float | str) -> str:
         # Bitcoin Core 接受字符串格式金额；避免 float() 导致精度丢失。
         return cast("str", self._call("sendtoaddress", [address, str(amount_btc)]))
 
@@ -197,41 +208,6 @@ class BitcoinRpcClient:
 
     def get_block(self, block_hash: str, verbosity: int = 2) -> BitcoinBlockInfo:
         return cast("BitcoinBlockInfo", self._call("getblock", [block_hash, verbosity]))
-
-    def list_unspent(self, address: str, min_conf: int = 1) -> list[BitcoinUtxo]:
-        result = self._call("listunspent", [min_conf, 9_999_999, [address]])
-        if not result:
-            return []
-        return cast("list[BitcoinUtxo]", result)
-
-    def scan_unspent(self, address: str, min_conf: int = 1) -> list[BitcoinUtxo]:
-        # descriptor 私钥钱包无法直接 import watch-only 时，回退到全节点 UTXO 集扫描。
-        result = cast(
-            "dict[str, Any]",
-            self._call("scantxoutset", ["start", [f"addr({address})"]]),
-        )
-        if not result.get("success"):
-            return []
-
-        best_height = int(result.get("height", 0))
-        raw_unspents = cast("list[dict[str, Any]]", result.get("unspents", []))
-        scanned_unspents: list[BitcoinUtxo] = []
-        for utxo in raw_unspents:
-            utxo_height = int(utxo.get("height", 0))
-            confirmations = max(best_height - utxo_height + 1, 0) if utxo_height else 0
-            if confirmations < min_conf:
-                continue
-            scanned_unspents.append(
-                {
-                    "txid": utxo["txid"],
-                    "vout": int(utxo["vout"]),
-                    "amount": utxo["amount"],
-                    "confirmations": confirmations,
-                    "height": utxo_height,
-                    "scriptPubKey": utxo["scriptPubKey"],
-                }
-            )
-        return scanned_unspents
 
     def get_transaction(self, txid: str) -> BitcoinTxInfo | None:
         try:
@@ -253,22 +229,3 @@ class BitcoinRpcClient:
                 return None
             raise
 
-    def send_raw_transaction(self, hex_string: str) -> str:
-        return cast("str", self._call("sendrawtransaction", [hex_string]))
-
-    def estimate_smart_fee(self, conf_target: int = BTC_FEE_TARGET_BLOCKS) -> Decimal:
-        """估算矿工费率（BTC/kB），若节点无法估算则返回默认值。"""
-        try:
-            result = self._call("estimatesmartfee", [conf_target])
-        except BitcoinRpcError:
-            result = None
-
-        if isinstance(result, dict):
-            fee_rate = result.get("feerate")
-            if fee_rate:
-                return Decimal(str(fee_rate))
-
-        # 回退到默认费率（satoshi/byte → BTC/kB 转换）
-        return Decimal(BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE * 1000) / Decimal(
-            SATOSHI_PER_BTC
-        )

@@ -84,14 +84,16 @@ currencies_tasks = {
 # bitcoin app
 # ---------------------------
 bitcoin_tasks = {
-    "process_bitcoin_queues": {
-        "task": "bitcoin.tasks.process_bitcoin_queues",
-        "schedule": 30,
-    },
     "scan_bitcoin_receipts": {
         # BTC 首版改为内部区块扫描，不再依赖外部流服务商回调。
         "task": "bitcoin.tasks.scan_bitcoin_receipts",
         "schedule": 30,
+    },
+    "sync_bitcoin_watch_addresses": {
+        # 定期全量同步 watch-only 地址到 Bitcoin 节点钱包，
+        # 确保换节点或节点重建后自动恢复，无需手动干预。
+        "task": "bitcoin.tasks.sync_bitcoin_watch_addresses",
+        "schedule": 300,
     },
 }
 

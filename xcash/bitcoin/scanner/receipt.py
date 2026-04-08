@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+import structlog
 from django.db import transaction
 from django.utils import timezone
 
@@ -21,6 +22,8 @@ from chains.models import ChainType
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 
+logger = structlog.get_logger()
+
 
 class BitcoinReceiptScanner:
     """基于 Bitcoin Core 的标准 BTC 收款扫描器。"""
@@ -38,7 +41,7 @@ class BitcoinReceiptScanner:
         cursor = cls._get_or_create_cursor(chain=chain)
         if not cursor.enabled:
             return 0
-        watch_set = load_watch_set()
+        watched_addresses = load_watch_set()
         client = BitcoinRpcClient(chain.rpc)
 
         try:
@@ -46,7 +49,7 @@ class BitcoinReceiptScanner:
             # 后台链列表与扫描游标都依赖最新块高，BTC 扫描顺手把链状态同步上来。
             Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_height)
 
-            if not watch_set.watched_addresses:
+            if not watched_addresses:
                 cls._mark_cursor_idle(cursor=cursor, latest_height=latest_height)
                 return 0
 
@@ -64,13 +67,33 @@ class BitcoinReceiptScanner:
             created_count = 0
 
             for height in range(from_block, to_block + 1):
-                block_hash = client.get_block_hash(height)
-                block = client.get_block(block_hash)
+                try:
+                    block_hash = client.get_block_hash(height)
+                    block = client.get_block(block_hash)
+                except BitcoinRpcError as exc:
+                    if cls._is_pruned_block_error(exc):
+                        # 裁剪节点已删除该区块数据（宕机时间超过保留窗口），
+                        # 将游标重置到最近可用区块，放弃中间缺失的区块。
+                        reset_to = max(0, latest_height - cls.SCAN_BATCH_SIZE + 1)
+                        logger.warning(
+                            "Bitcoin 扫描遇到已裁剪区块，游标重置到链头附近",
+                            chain=chain.code,
+                            pruned_height=height,
+                            reset_to=reset_to,
+                            latest_height=latest_height,
+                        )
+                        cls._advance_cursor(
+                            cursor=cursor,
+                            latest_height=latest_height,
+                            scanned_to_block=reset_to - 1,
+                        )
+                        return created_count
+                    raise
+
                 created_count += cls._scan_block(
                     chain=chain,
                     block=block,
-                    watched_addresses=watch_set.watched_addresses,
-                    recipient_addresses=watch_set.recipient_addresses,
+                    watched_addresses=watched_addresses,
                     client=client,
                     tx_cache=tx_cache,
                 )
@@ -154,6 +177,12 @@ class BitcoinReceiptScanner:
         )
 
     @staticmethod
+    def _is_pruned_block_error(exc: BitcoinRpcError) -> bool:
+        """判断 RPC 错误是否因为请求了已裁剪的区块数据。"""
+        msg = str(exc).lower()
+        return "pruned data" in msg or "block not available" in msg
+
+    @staticmethod
     def _mark_cursor_error(*, cursor: BitcoinScanCursor, exc: Exception) -> None:
         BitcoinScanCursor.objects.filter(pk=cursor.pk).update(
             last_error=str(exc)[:255],
@@ -168,7 +197,6 @@ class BitcoinReceiptScanner:
         chain: Chain,
         block: BitcoinBlockInfo,
         watched_addresses: frozenset[str],
-        recipient_addresses: frozenset[str],
         client: BitcoinRpcClient,
         tx_cache: dict[str, BitcoinTxInfo],
     ) -> int:
@@ -204,8 +232,6 @@ class BitcoinReceiptScanner:
                 if not cls._should_track_output(
                     sender_address=sender_address,
                     recipient_address=recipient_address,
-                    internal_addresses=watched_addresses,
-                    recipient_addresses=recipient_addresses,
                 ):
                     continue
 
@@ -239,18 +265,9 @@ class BitcoinReceiptScanner:
         *,
         sender_address: str,
         recipient_address: str,
-        internal_addresses: frozenset[str],
-        recipient_addresses: frozenset[str],
     ) -> bool:
-        # BTC 交易通常带找零。这里先只保留两类安全场景：
-        # 1. 外部地址 -> 任意我方收款地址
-        # 2. 内部充币地址 -> 项目收币地址（用于归集到账）
-        if sender_address == recipient_address:
-            return False
-        return not (
-            sender_address in internal_addresses
-            and recipient_address not in recipient_addresses
-        )
+        # 砍掉充提后只需过滤自发自收；sender 为空串时自动放行
+        return sender_address != recipient_address
 
     @classmethod
     def _resolve_sender_address(
@@ -271,7 +288,11 @@ class BitcoinReceiptScanner:
 
             prev_tx = tx_cache.get(prev_txid)
             if prev_tx is None:
-                prev_tx = client.get_raw_transaction(prev_txid)
+                try:
+                    prev_tx = client.get_raw_transaction(prev_txid)
+                except BitcoinRpcError:
+                    # 剪枝节点可能不保留历史交易数据，跳过该输入继续处理。
+                    continue
                 if prev_tx is None:
                     continue
                 tx_cache[prev_txid] = prev_tx

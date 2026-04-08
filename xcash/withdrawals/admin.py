@@ -8,7 +8,6 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from unfold.decorators import display
 
-from bitcoin.fee_bump import BitcoinFeeBumpService
 from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
 from core.monitoring import OperationalRiskService
@@ -42,42 +41,27 @@ class WithdrawalAttentionFilter(admin.SimpleListFilter):
 
     def queryset(self, request, queryset):
         now = timezone.now()
+        stalled_q = (
+            Q(
+                status=WithdrawalStatus.REVIEWING,
+                updated_at__lte=now
+                - OperationalRiskService.reviewing_withdrawal_timeout(),
+            )
+            | Q(
+                status=WithdrawalStatus.PENDING,
+                updated_at__lte=now
+                - OperationalRiskService.pending_withdrawal_timeout(),
+            )
+            | Q(
+                status=WithdrawalStatus.CONFIRMING,
+                updated_at__lte=now
+                - OperationalRiskService.confirming_withdrawal_timeout(),
+            )
+        )
         if self.value() == "stalled":
-            return queryset.filter(
-                Q(
-                    status=WithdrawalStatus.REVIEWING,
-                    updated_at__lte=now
-                    - OperationalRiskService.reviewing_withdrawal_timeout(),
-                )
-                | Q(
-                    status=WithdrawalStatus.PENDING,
-                    updated_at__lte=now
-                    - OperationalRiskService.pending_withdrawal_timeout(),
-                )
-                | Q(
-                    status=WithdrawalStatus.CONFIRMING,
-                    updated_at__lte=now
-                    - OperationalRiskService.confirming_withdrawal_timeout(),
-                )
-            )
+            return queryset.filter(stalled_q)
         if self.value() == "normal":
-            return queryset.exclude(
-                Q(
-                    status=WithdrawalStatus.REVIEWING,
-                    updated_at__lte=now
-                    - OperationalRiskService.reviewing_withdrawal_timeout(),
-                )
-                | Q(
-                    status=WithdrawalStatus.PENDING,
-                    updated_at__lte=now
-                    - OperationalRiskService.pending_withdrawal_timeout(),
-                )
-                | Q(
-                    status=WithdrawalStatus.CONFIRMING,
-                    updated_at__lte=now
-                    - OperationalRiskService.confirming_withdrawal_timeout(),
-                )
-            )
+            return queryset.exclude(stalled_q)
         return queryset
 
 
@@ -232,14 +216,12 @@ class WithdrawalAdmin(ModelAdmin):
     actions = (
         "approve_selected_withdrawals",
         "reject_selected_withdrawals",
-        "bump_selected_bitcoin_withdrawal_fee",
     )
     inlines = (WithdrawalReviewLogInline,)
 
     SENSITIVE_REVIEW_ACTIONS = {
         "approve_selected_withdrawals": "admin_bulk_approve",
         "reject_selected_withdrawals": "admin_bulk_reject",
-        "bump_selected_bitcoin_withdrawal_fee": "admin_bitcoin_fee_bump",
     }
 
     def get_queryset(self, request):
@@ -502,39 +484,6 @@ class WithdrawalAdmin(ModelAdmin):
                 _("已拒绝执行 %(count)s 笔无权限提币") % {"count": denied},
                 level=messages.ERROR,
             )
-
-    @admin.action(description=_("BTC 提费重发"))
-    def bump_selected_bitcoin_withdrawal_fee(self, request, queryset):
-        try:
-            approval_context = getattr(
-                request, "_withdrawal_approval_context", None
-            ) or get_fresh_admin_approval_context(
-                request=request,
-                source="admin_bitcoin_fee_bump",
-            )
-        except AdminOTPRequiredError as exc:
-            self.message_user(request, str(exc), level=messages.ERROR)
-            return
-
-        selected_ids = list(queryset.values_list("pk", flat=True))
-        if len(selected_ids) != 1:
-            self.message_user(
-                request,
-                _("BTC 提费重发一次只能选择 1 笔提现"),
-                level=messages.ERROR,
-            )
-            return
-
-        try:
-            BitcoinFeeBumpService.bump_withdrawal(
-                withdrawal_id=selected_ids[0],
-                approval_context=approval_context,
-            )
-        except ValueError as exc:
-            self.message_user(request, str(exc), level=messages.ERROR)
-            return
-
-        self.message_user(request, _("已提交 BTC 提现提费重发"))
 
     def has_add_permission(self, request):
         return False

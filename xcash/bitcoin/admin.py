@@ -1,70 +1,9 @@
 from django.contrib import admin
 from unfold.decorators import display
 
-from bitcoin.models import BitcoinBroadcastTask
 from bitcoin.models import BitcoinScanCursor
 from common.admin import ReadOnlyModelAdmin
 from common.admin_scan_cursor import SyncScanCursorToLatestActionMixin
-from common.utils.math import format_decimal_stripped
-
-
-@admin.register(BitcoinBroadcastTask)
-class BitcoinBroadcastTaskAdmin(ReadOnlyModelAdmin):
-    ordering = ("-created_at",)
-    list_display = (
-        "display_address",
-        "display_chain",
-        "transfer_type",
-        "display_recipient",
-        "display_amount",
-        "display_tx_hash",
-        "fee_satoshi",
-        "display_status",
-        "created_at",
-    )
-    # 状态展示优先读取统一父任务，后台查询一并预加载，避免 N+1。
-    list_select_related = ("base_task", "base_task__crypto", "address", "chain")
-    search_fields = ("base_task__tx_hash", "address__address", "base_task__recipient")
-
-    @display(
-        description="状态",
-        label={
-            "待执行": "warning",
-            "待上链": "warning",
-            "待确认": "info",
-            "成功": "success",
-            "失败": "danger",
-            "已结束": "info",
-        },
-    )
-    def display_status(self, instance: BitcoinBroadcastTask) -> str:
-        return instance.status
-
-    @admin.display(description="地址", ordering="address__address")
-    def display_address(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        return obj.address
-
-    @admin.display(description="网络", ordering="chain__name")
-    def display_chain(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        return obj.chain
-
-    @admin.display(description="类型", ordering="base_task__transfer_type")
-    def transfer_type(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        return obj.base_task.get_transfer_type_display() if obj.base_task_id else "—"
-
-    @admin.display(description="收款地址", ordering="base_task__recipient")
-    def display_recipient(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        return obj.base_task.recipient if obj.base_task_id else "—"
-
-    @admin.display(description="数量")
-    def display_amount(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        if obj.base_task_id and obj.base_task.amount is not None:
-            return format_decimal_stripped(obj.base_task.amount)
-        return "—"
-
-    @admin.display(description="交易 ID", ordering="base_task__tx_hash")
-    def display_tx_hash(self, obj: BitcoinBroadcastTask):  # pragma: no cover
-        return obj.base_task.tx_hash if obj.base_task_id else "—"
 
 
 @admin.register(BitcoinScanCursor)

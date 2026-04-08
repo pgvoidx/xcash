@@ -24,7 +24,6 @@ class AdapterInterface(ABC):
 
     交易签名与广播逻辑已从 Adapter 层移除，统一由各链专属的 XxxBroadcastTask 模型负责：
     - EVM：evm.EvmBroadcastTask.schedule_transfer()
-    - Bitcoin：bitcoin.BitcoinBroadcastTask.schedule_transfer()
     """
 
     @abstractmethod

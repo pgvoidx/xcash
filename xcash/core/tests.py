@@ -17,7 +17,6 @@ from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
-from bitcoin.models import BitcoinBroadcastTask
 from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
 from bitcoin.scanner import BitcoinReceiptScanner
@@ -1554,109 +1553,6 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
         transfer.confirm()
         deposit.refresh_from_db()
         self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-    @patch.dict(environ, {"BITCOIN_NETWORK": "regtest"}, clear=False)
-    @patch("withdrawals.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_bitcoin_withdrawal_can_broadcast_and_complete(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 真实 regtest 联调：BTC 提币签名、广播、链上确认和 Withdrawal 状态推进都必须打通。
-        from bitcoinutils.setup import setup as bitcoinutils_setup
-
-        bitcoinutils_setup("regtest")
-        wallet_client = self._require_bitcoin()
-        crypto = Crypto.objects.create(
-            name="Bitcoin Withdrawal Local",
-            symbol="BTCW",
-            coingecko_id="bitcoin-withdrawal-local",
-            decimals=8,
-        )
-        chain = Chain.objects.create(
-            name="Bitcoin Local Withdrawal",
-            code="bitcoin-local-withdrawal",
-            type=ChainType.BITCOIN,
-            native_coin=crypto,
-            rpc=self.BTC_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local BTC Withdrawal Project",
-            wallet=Wallet.generate(),
-        )
-        vault_address = project.wallet.get_address(
-            chain_type=ChainType.BITCOIN,
-            usage=AddressUsage.Vault,
-        )
-        call_command(
-            "prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101"
-        )
-
-        funding_tx_hash = wallet_client.send_to_address(
-            vault_address.address, Decimal("0.05")
-        )
-        mining_address = wallet_client.get_new_address(
-            label="btc-withdraw-miner",
-            address_type="legacy",
-        )
-        wallet_client.generate_to_address(1, mining_address)
-        self.assertIsNotNone(funding_tx_hash)
-
-        recipient = wallet_client.get_new_address(
-            label="btc-withdraw-recipient",
-            address_type="legacy",
-        )
-        amount = Decimal("0.01")
-        btc_task = BitcoinBroadcastTask.schedule_transfer(
-            address=vault_address,
-            chain=chain,
-            crypto=crypto,
-            to=recipient,
-            amount=amount,
-            transfer_type=TransferType.Withdrawal,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="local-btc-order",
-            chain=chain,
-            crypto=crypto,
-            amount=amount,
-            to=recipient,
-            hash=btc_task.base_task.tx_hash,
-            broadcast_task=btc_task.base_task,
-            status=WithdrawalStatus.PENDING,
-        )
-
-        btc_task.broadcast()
-        wallet_client.generate_to_address(1, mining_address)
-        adapter = AdapterFactory.get_adapter(chain.type)
-        self.assertEqual(
-            adapter.tx_result(chain=chain, tx_hash=btc_task.base_task.tx_hash),
-            TransferStatus.CONFIRMED,
-        )
-
-        from bitcoin.tasks import scan_bitcoin_receipts
-
-        scan_bitcoin_receipts.run()
-        transfer = OnchainTransfer.objects.filter(
-            chain=chain,
-            hash=btc_task.base_task.tx_hash,
-            event_id="vout:0",
-        ).first()
-        if transfer is None:
-            self.fail("Bitcoin withdrawal observed transfer missing")
-        transfer.process()
-        withdrawal.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
-
-        transfer.confirm()
-        withdrawal.refresh_from_db()
-        btc_task.base_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
-        self.assertEqual(btc_task.base_task.result, BroadcastTaskResult.SUCCESS)
 
     @patch.dict(environ, {"BITCOIN_NETWORK": "regtest"}, clear=False)
     @patch("invoices.service.WebhookService.create_event")

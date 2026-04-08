@@ -94,6 +94,7 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["anon"] = env.str(
     "DEV_ANON_THROTTLE_RATE",
     default="10000/minute",
 )
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["withdrawal_create"] = "10000/minute"
 
 # Stress app 侧边栏注入
 # ------------------------------------------------------------------------------
@@ -103,7 +104,7 @@ from django.utils.translation import gettext_lazy as _  # noqa: E402
 UNFOLD["SIDEBAR"]["navigation"].insert(
     -1,
     {
-        "title": _("压力测试"),
+        "title": _("压测"),
         "collapsible": True,
         "items": [
             {
@@ -115,6 +116,11 @@ UNFOLD["SIDEBAR"]["navigation"].insert(
                 "title": _("账单测试"),
                 "icon": "checklist",
                 "link": reverse_lazy("admin:stress_invoicestresscase_changelist"),
+            },
+            {
+                "title": _("提币测试"),
+                "icon": "upload",
+                "link": reverse_lazy("admin:stress_withdrawalstresscase_changelist"),
             },
         ],
     },

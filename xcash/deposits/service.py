@@ -192,8 +192,6 @@ class DepositService:
             "chain": chain,
             "recipient_address": recipient.address,
             "amount": amount,
-            "sweep": chain.type == ChainType.BITCOIN
-            and (crypto == chain.native_coin or crypto.is_native),
             "deposit_id": deposit.id,
         }
 
@@ -226,27 +224,6 @@ class DepositService:
                 )
                 return True
 
-            if params["chain"].type == ChainType.BITCOIN:
-                from bitcoin.models import BitcoinBroadcastTask
-                from bitcoin.tasks import broadcast_bitcoin_broadcast_task
-
-                task = BitcoinBroadcastTask.schedule_transfer(
-                    address=params["address"],
-                    crypto=params["crypto"],
-                    chain=params["chain"],
-                    to=params["recipient_address"],
-                    amount=params["amount"],
-                    transfer_type=TransferType.DepositCollection,
-                    sweep=bool(params.get("sweep")),
-                )
-                task_pk = task.pk
-                db_transaction.on_commit(
-                    lambda: broadcast_bitcoin_broadcast_task.apply_async(
-                        args=(task_pk,), countdown=1
-                    )
-                )
-                tx_hash = task.base_task.tx_hash
-                broadcast_task = task.base_task
             else:
                 tx_hash = params["address"].send_crypto(
                     crypto=params["crypto"],
@@ -529,16 +506,7 @@ class DepositService:
             )
             return int(gas_price * gas_limit)
 
-        if chain.type == ChainType.BITCOIN:
-            # Bitcoin 归集原生币时，schedule_transfer 内部会从 amount 中额外扣除矿工费，
-            # 传入全额余额会导致 select_utxos_for_amount 因 amount + fee > total 而失败。
-            # 这里按保守的 1 输入 2 输出 P2WPKH 交易体积 × 默认费率预留 fee 空间。
-            from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-            from bitcoin.constants import BTC_P2WPKH_TX_VBYTES
-
-            return BTC_P2WPKH_TX_VBYTES * BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-
-        # 防御性兜底：当前系统只支持 EVM / Bitcoin；若出现异常链类型，返回 0 避免归集流程直接崩溃。
+        # 防御性兜底：当前系统只支持 EVM；若出现异常链类型，返回 0 避免归集流程直接崩溃。
         return 0
 
     @staticmethod
