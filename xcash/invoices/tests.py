@@ -28,7 +28,6 @@ from common.error_codes import ErrorCode
 from currencies.models import Crypto
 from currencies.models import ChainToken
 from currencies.models import Fiat
-from currencies.service import CryptoService
 from invoices.admin import InvoiceAdmin
 from invoices.exceptions import InvoiceAllocationError
 from invoices.exceptions import InvoiceStatusError
@@ -613,7 +612,7 @@ class InvoicePublicThrottleTests(TestCase):
 
 
 class InvoiceAllowedMethodsCapabilityTests(TestCase):
-    def test_allowed_methods_only_exposes_usdt_for_tron_invoice(self):
+    def test_available_methods_only_exposes_usdt_for_tron_invoice(self):
         project = Project.objects.create(
             name="Invoice Capability Project",
             wallet=Wallet.objects.create(),
@@ -655,10 +654,18 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             address="TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
             decimals=6,
         )
+        RecipientAddress.objects.create(
+            name="tron-pay",
+            project=project,
+            chain_type=ChainType.TRON,
+            address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
+            used_for_invoice=True,
+            used_for_deposit=False,
+        )
 
-        methods = CryptoService.allowed_methods(project)
+        methods = Invoice.available_methods(project)
 
-        self.assertEqual(methods["USDT"], {tron_chain.code})
+        self.assertEqual(methods["USDT"], [tron_chain.code])
         self.assertNotIn("USDC", methods)
 
 
