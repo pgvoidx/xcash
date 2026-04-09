@@ -36,7 +36,6 @@ class InternalEvmTaskCoordinator:
             EvmBroadcastTask.objects.select_related("base_task", "address")
             .filter(
                 chain=chain,
-                completed=False,
                 base_task__stage=BroadcastTaskStage.PENDING_CHAIN,
                 base_task__result=BroadcastTaskResult.UNKNOWN,
                 last_attempt_at__lt=ago(seconds=EVM_PENDING_REBROADCAST_TIMEOUT),
@@ -145,8 +144,7 @@ class InternalEvmTaskCoordinator:
 
         base_task = locked_task.base_task
         if (
-            locked_task.completed
-            or base_task.stage == BroadcastTaskStage.FINALIZED
+            base_task.stage == BroadcastTaskStage.FINALIZED
             or base_task.result != BroadcastTaskResult.UNKNOWN
         ):
             return
@@ -166,9 +164,6 @@ class InternalEvmTaskCoordinator:
         if not updated:
             return
 
-        EvmBroadcastTask.objects.filter(pk=locked_task.pk, completed=False).update(
-            completed=True
-        )
         if base_task.transfer_type == TransferType.Withdrawal:
             WithdrawalService.confirm_withdrawal_by_task(broadcast_task=base_task)
 
@@ -191,8 +186,7 @@ class InternalEvmTaskCoordinator:
 
         base_task = locked_task.base_task
         if (
-            locked_task.completed
-            or base_task.stage != BroadcastTaskStage.PENDING_CHAIN
+            base_task.stage != BroadcastTaskStage.PENDING_CHAIN
             or base_task.result != BroadcastTaskResult.UNKNOWN
         ):
             return False
@@ -204,9 +198,6 @@ class InternalEvmTaskCoordinator:
         if not updated:
             return False
 
-        EvmBroadcastTask.objects.filter(pk=locked_task.pk, completed=False).update(
-            completed=True
-        )
         if base_task.transfer_type == TransferType.Withdrawal:
             WithdrawalService.fail_withdrawal(broadcast_task=base_task)
         return True

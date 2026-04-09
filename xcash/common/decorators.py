@@ -6,6 +6,18 @@ from django.core.cache import cache
 
 
 def singleton_task(timeout, *, use_params=False):
+    """防止同一 Celery 任务并发执行的互斥装饰器。
+
+    通过 Redis cache.add 实现分布式互斥锁：
+    - 同一任务（或同参数任务）在执行期间不会被重复执行，后到的直接跳过（返回 None）。
+    - 任务正常结束后立即释放锁，不会阻塞后续调度。
+    - timeout 不是冷却期，而是锁的最大存活时间——仅当 worker 崩溃未能释放锁时，
+      timeout 到期后锁自动过期，防止死锁。正常流程中锁的实际持有时间 = 函数执行时间。
+
+    参数:
+        timeout: 锁最大存活秒数（应大于任务最长预期执行时间）。
+        use_params: 为 True 时按参数区分锁（同函数不同参数可并行）。
+    """
     def task_decorator(task_func):
         @wraps(task_func)
         def wrapper(*args, **kwargs):
@@ -15,45 +27,18 @@ def singleton_task(timeout, *, use_params=False):
             else:
                 lock_id = f"{task_func.__name__}-locked"
 
-            def acquire_lock():
-                return cache.add(lock_id, "true", timeout)
+            acquired = cache.add(lock_id, "true", timeout)
+            if not acquired:
+                return None
 
-            def release_lock():
-                return cache.delete(lock_id)
-
-            if acquire_lock():
-                try:
-                    return task_func(*args, **kwargs)
-                finally:
-                    release_lock()
-
-            return None
+            try:
+                return task_func(*args, **kwargs)
+            finally:
+                cache.delete(lock_id)
 
         return wrapper
 
     return task_decorator
-
-
-def cache_func(timeout, *, use_params=True):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            if use_params:
-                cache_key = _generate_func_key(func, *args, **kwargs)
-            else:
-                cache_key = _generate_func_key(func)
-
-            result = cache.get(cache_key)
-            if result is not None:
-                return result
-
-            result = func(*args, **kwargs)
-            cache.set(cache_key, result, timeout)
-            return result
-
-        return wrapper
-
-    return decorator
 
 
 def _generate_func_key(func, *args, **kwargs):

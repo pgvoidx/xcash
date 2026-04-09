@@ -19,7 +19,6 @@ from web3 import Web3
 
 from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
-from bitcoin.scanner import BitcoinReceiptScanner
 from chains.adapters import AdapterFactory
 from chains.models import AddressUsage
 from chains.models import BroadcastTask
@@ -75,7 +74,6 @@ def setUpModule():
     # core 联调测试需要真实地址派生与签名，但不应额外依赖外部 signer 进程。
     for target in (
         "chains.signer.get_signer_backend",
-        "bitcoin.models.get_signer_backend",
         "evm.models.get_signer_backend",
     ):
         patcher = patch(target, return_value=backend)
@@ -314,17 +312,21 @@ class LocalChainBootstrapCommandTests(TestCase):
 
         root_client = Mock()
         wallet_client = Mock()
+        miner_client = Mock()
         root_client.list_wallets.return_value = []
         root_client.load_wallet.side_effect = BitcoinRpcError("Wallet file not found")
-        wallet_client.get_new_address.return_value = (
+        miner_client.get_new_address.return_value = (
             "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"
         )
-        bitcoin_client_cls.side_effect = [root_client, wallet_client]
+        # prepare_local_bitcoin 创建 3 个 client：root, wallet(watch-only), miner
+        bitcoin_client_cls.side_effect = [root_client, wallet_client, miner_client]
 
         call_command("prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=2")
 
-        root_client.create_wallet.assert_called_once_with("xcash")
-        wallet_client.generate_to_address.assert_called_once_with(
+        # 主钱包（watch-only）和矿工钱包分别创建
+        root_client.create_wallet.assert_any_call("xcash", disable_private_keys=True)
+        root_client.create_wallet.assert_any_call("xcash-miner", disable_private_keys=False)
+        miner_client.generate_to_address.assert_called_once_with(
             2,
             "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn",
         )
@@ -426,6 +428,7 @@ class InitEnvScriptTests(TestCase):
 class LocalChainIntegrationMixin:
     EVM_RPC = "http://127.0.0.1:8545"
     BTC_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash"
+    BTC_MINER_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash-miner"
 
     def _require_anvil(self) -> Web3:
         w3 = Web3(Web3.HTTPProvider(self.EVM_RPC, request_kwargs={"timeout": 5}))
@@ -439,6 +442,15 @@ class LocalChainIntegrationMixin:
             client.get_block_count()
         except Exception as exc:  # noqa: BLE001
             self.skipTest(f"本地 bitcoind regtest 不可用，跳过真实 BTC 联调测试: {exc}")
+        return client
+
+    def _require_bitcoin_miner(self) -> BitcoinRpcClient:
+        """返回带私钥的矿工钱包客户端，用于 regtest 打款和挖矿。"""
+        client = BitcoinRpcClient(self.BTC_MINER_RPC)
+        try:
+            client.get_block_count()
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"本地 bitcoind regtest 矿工钱包不可用: {exc}")
         return client
 
     def _deploy_test_erc20(self, w3: Web3, *, supply_raw: int):
@@ -1502,59 +1514,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
 
 class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
     @patch.dict(environ, {"BITCOIN_NETWORK": "regtest"}, clear=False)
-    @patch("deposits.service.WebhookService.create_event")
-    @patch("chains.tasks.process_transfer.apply_async")
-    def test_local_bitcoin_scan_can_create_and_confirm_deposit(
-        self,
-        _process_transfer_mock,
-        _create_event_mock,
-    ):
-        # 真实 regtest 联调：系统地址收到 BTC 后，扫块必须能落 OnchainTransfer 并推进 Deposit 完成。
-        wallet_client = self._require_bitcoin()
-        crypto = Crypto.objects.create(
-            name="Bitcoin Local",
-            symbol="BTCL",
-            coingecko_id="bitcoin-local",
-            decimals=8,
-        )
-        chain = Chain.objects.create(
-            name="Bitcoin Local Integration",
-            code="bitcoin-local-integration",
-            type=ChainType.BITCOIN,
-            native_coin=crypto,
-            rpc=self.BTC_RPC,
-            active=True,
-            confirm_block_count=1,
-        )
-        project = Project.objects.create(
-            name="Local BTC Project",
-            wallet=Wallet.generate(),
-        )
-        customer = Customer.objects.create(project=project, uid="btc-customer-1")
-        deposit_address = DepositAddress.get_address(chain, customer)
-
-        # 先导入新生成的 watch-only 地址，再由 regtest 钱包真实打款。
-        call_command(
-            "prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101"
-        )
-        tx_hash = wallet_client.send_to_address(deposit_address, Decimal("0.02"))
-        mining_address = wallet_client.get_new_address(
-            label="integration-miner",
-            address_type="legacy",
-        )
-        wallet_client.generate_to_address(1, mining_address)
-
-        created_count = BitcoinReceiptScanner.scan_recent_receipts(chain)
-        self.assertGreaterEqual(created_count, 1)
-
-        transfer = OnchainTransfer.objects.get(hash=tx_hash)
-        transfer.process()
-        deposit = transfer.deposit
-        transfer.confirm()
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.status, DepositStatus.COMPLETED)
-
-    @patch.dict(environ, {"BITCOIN_NETWORK": "regtest"}, clear=False)
     @patch("invoices.service.WebhookService.create_event")
     @patch("chains.tasks.process_transfer.apply_async")
     def test_local_bitcoin_invoice_payment_can_complete(
@@ -1564,7 +1523,8 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 真实 regtest 联调：项目 BTC 收款地址收到付款后，
         # 扫描、Invoice 命中、确认和 Completed 终局都必须打通。
-        wallet_client = self._require_bitcoin()
+        self._require_bitcoin()
+        wallet_client = self._require_bitcoin_miner()
         crypto = Crypto.objects.create(
             name="Bitcoin Invoice Local",
             symbol="BTCI",

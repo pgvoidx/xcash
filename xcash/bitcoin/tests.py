@@ -18,7 +18,6 @@ from bitcoin.scanner.service import BitcoinScanSummary
 from chains.adapters import TxCheckStatus
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import Wallet
 from currencies.models import Crypto
 from projects.models import Project
 from projects.models import RecipientAddress

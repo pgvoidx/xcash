@@ -475,7 +475,7 @@ class ProjectAdmin(
                 "wallet",
                 "appid",
                 "failed_count",
-                "display_hot_wallet_addresses",
+                "display_vault_addresses",
                 "display_ready_detail",
             )
         # 新建项目
@@ -521,9 +521,9 @@ class ProjectAdmin(
             },
         ),
         (
-            _("钱包"),
+            _("金库"),
             {
-                "fields": ("display_hot_wallet_addresses",),
+                "fields": ("display_vault_addresses",),
             },
         ),
         (
@@ -583,15 +583,15 @@ class ProjectAdmin(
             f"{review} / 免审:{exempt_limit} / 单笔:{single_limit} / 单日:{daily_limit}"
         )
 
-    @display(description=_("热钱包地址"))
-    def display_hot_wallet_addresses(self, instance: Project):
+    @display(description=_("金库地址"))
+    def display_vault_addresses(self, instance: Project):
         rows = []
         for chain_type, chain_label in ChainType.choices:
             chain_names = list(
                 Chain.objects.filter(type=chain_type).values_list("name", flat=True)
             )
             try:
-                hot_wallet_address = instance.wallet.get_address(
+                vault_address = instance.wallet.get_address(
                     chain_type=chain_type,
                     usage=AddressUsage.Vault,
                 )
@@ -599,7 +599,7 @@ class ProjectAdmin(
                     (
                         chain_label,
                         " / ".join(chain_names) or "-",
-                        hot_wallet_address.address,
+                        vault_address.address,
                     )
                 )
             except RuntimeError:
@@ -637,7 +637,7 @@ class ProjectAdmin(
             "</div>",
             _("地址格式"),
             _("适用链"),
-            _("热钱包地址"),
+            _("金库地址"),
             body,
         )
 

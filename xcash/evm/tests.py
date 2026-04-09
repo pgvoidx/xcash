@@ -157,6 +157,8 @@ class EvmScannerDefaultsTests(TestCase):
 class EvmBroadcastTaskTests(TestCase):
     def test_next_nonce_returns_count_of_existing_tasks(self):
         # nonce 基于已有任务数量推算，事务回滚时自动复用，不会产生空洞。
+        from chains.models import AddressChainState
+
         native = Crypto.objects.create(
             name="Ethereum Nonce",
             symbol="ETHN",
@@ -181,8 +183,10 @@ class EvmBroadcastTaskTests(TestCase):
             address="0x0000000000000000000000000000000000000F01",
         )
 
+        state = AddressChainState.acquire_for_update(address=addr, chain=chain)
+
         # 无任何任务时 nonce 应从 0 开始
-        self.assertEqual(EvmBroadcastTask._next_nonce(addr, chain), 0)
+        self.assertEqual(EvmBroadcastTask._next_nonce(addr, chain, state=state), 0)
 
         # 创建一个任务后 nonce 应为 1
         base_task = BroadcastTask.objects.create(
@@ -203,7 +207,8 @@ class EvmBroadcastTaskTests(TestCase):
             gas_price=1,
             signed_payload="0x00",
         )
-        self.assertEqual(EvmBroadcastTask._next_nonce(addr, chain), 1)
+        state.refresh_from_db()
+        self.assertEqual(EvmBroadcastTask._next_nonce(addr, chain, state=state), 1)
 
     def test_broadcast_records_last_attempt_without_marking_completion(self):
         # EVM 主执行对象只记录发送尝试；是否上链由统一父任务状态推进。
@@ -240,7 +245,6 @@ class EvmBroadcastTaskTests(TestCase):
         broadcast_task.broadcast()
 
         self.assertIsNotNone(broadcast_task.last_attempt_at)
-        self.assertFalse(broadcast_task.completed)
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_broadcast_keeps_insufficient_funds_retryable_without_finalizing(
@@ -319,7 +323,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=base_task,
             address=addr,
             chain=chain,
-            nonce=1,
+            nonce=0,
             to=base_task.recipient,
             value=0,
             gas=21_000,
@@ -341,7 +345,6 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
-        self.assertFalse(broadcast_task.completed)
         webhook_mock.assert_not_called()
 
     def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
@@ -394,7 +397,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=base_task,
             address=addr,
             chain=chain,
-            nonce=2,
+            nonce=0,
             to=base_task.recipient,
             value=0,
             gas=21_000,
@@ -413,7 +416,6 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
-        self.assertFalse(broadcast_task.completed)
 
     def test_broadcast_keeps_nonce_too_low_for_followup_reconciliation(self):
         native = Crypto.objects.create(
@@ -463,7 +465,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=base_task,
             address=addr,
             chain=chain,
-            nonce=3,
+            nonce=0,
             to=base_task.recipient,
             value=0,
             gas=21_000,
@@ -478,7 +480,6 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
-        self.assertFalse(broadcast_task.completed)
 
     def test_broadcast_blocks_higher_nonce_until_lower_nonce_settles(self):
         native = Crypto.objects.create(
@@ -528,7 +529,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=lower_base_task,
             address=addr,
             chain=chain,
-            nonce=4,
+            nonce=0,
             to=lower_base_task.recipient,
             value=0,
             gas=21_000,
@@ -551,7 +552,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=base_task,
             address=addr,
             chain=chain,
-            nonce=5,
+            nonce=1,
             to=base_task.recipient,
             value=0,
             gas=21_000,
@@ -615,7 +616,7 @@ class EvmBroadcastTaskTests(TestCase):
             base_task=base_task,
             address=addr,
             chain=chain,
-            nonce=4,
+            nonce=0,
             to=base_task.recipient,
             value=0,
             gas=21_000,
@@ -630,7 +631,6 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
-        self.assertFalse(broadcast_task.completed)
 
 
 class EvmChainScannerServiceTests(TestCase):
@@ -782,7 +782,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         chain.w3.eth.account.sign_transaction.assert_not_called()
 
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
+    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     def test_create_broadcast_task_defers_signing_until_first_broadcast(
         self,
         _next_nonce_mock,
@@ -830,7 +830,7 @@ class EvmChainScannerServiceTests(TestCase):
         )
 
     @patch("evm.models.get_signer_backend")
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
+    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     def test_first_broadcast_creates_initial_tx_hash_history(
         self,
         _next_nonce_mock,
@@ -921,6 +921,27 @@ class EvmChainScannerServiceTests(TestCase):
                 "0x00000000000000000000000000000000000000f5"
             ),
         )
+        # 填充 nonce 0-4，满足触发器连续性约束
+        for n in range(5):
+            filler_base = BroadcastTask.objects.create(
+                chain=chain,
+                address=addr,
+                transfer_type=TransferType.Withdrawal,
+                stage=BroadcastTaskStage.FINALIZED,
+                result=BroadcastTaskResult.SUCCESS,
+            )
+            EvmBroadcastTask.objects.create(
+                base_task=filler_base,
+                address=addr,
+                chain=chain,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000f6"
+                ),
+                value=0,
+                nonce=n,
+                gas=21_000,
+                gas_price=1,
+            )
         base_task = BroadcastTask.objects.create(
             chain=chain,
             address=addr,
@@ -1105,6 +1126,11 @@ class EvmTaskQueueTests(TestCase):
     ) -> EvmBroadcastTask:
         # 任务级测试直接手工落库，聚焦"队列如何挑任务"和"终局任务是否被错误重播"。
         task_address = address or self.addr
+        next_nonce = self._next_test_nonce(task_address)
+        if nonce is not None and nonce > next_nonce:
+            # 触发器要求 nonce 连续，自动填充中间的空洞
+            self._fill_nonce_gap(task_address, next_nonce, nonce)
+        target_nonce = next_nonce if nonce is None else nonce
         base_task = BroadcastTask.objects.create(
             chain=self.chain,
             address=task_address,
@@ -1122,12 +1148,43 @@ class EvmTaskQueueTests(TestCase):
             base_task=base_task,
             address=task_address,
             chain=self.chain,
-            nonce=base_task.pk if nonce is None else nonce,
+            nonce=target_nonce,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f2"),
             value=0,
             gas=21_000,
             gas_price=1,
         )
+
+    def _next_test_nonce(self, address: Address) -> int:
+        from django.db.models import Max
+
+        max_nonce = EvmBroadcastTask.objects.filter(
+            address=address, chain=self.chain
+        ).aggregate(m=Max("nonce"))["m"]
+        return 0 if max_nonce is None else max_nonce + 1
+
+    def _fill_nonce_gap(self, address: Address, start: int, end: int) -> None:
+        """填充 [start, end) 区间的 nonce，满足触发器连续性约束。"""
+        for n in range(start, end):
+            filler_base = BroadcastTask.objects.create(
+                chain=self.chain,
+                address=address,
+                transfer_type=TransferType.Withdrawal,
+                stage=BroadcastTaskStage.FINALIZED,
+                result=BroadcastTaskResult.SUCCESS,
+            )
+            EvmBroadcastTask.objects.create(
+                base_task=filler_base,
+                address=address,
+                chain=self.chain,
+                nonce=n,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000f2"
+                ),
+                value=0,
+                gas=21_000,
+                gas_price=1,
+            )
 
     @patch("evm.tasks.EvmBroadcastTask.broadcast")
     def test_broadcast_task_skips_finalized_broadcast_task(self, broadcast_mock):
@@ -1767,7 +1824,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
             base_task=base_task,
             address=self.addr,
             chain=self.chain,
-            nonce=1,
+            nonce=0,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000c1"),
             value=0,
             data="0xa9059cbb",
@@ -1832,7 +1889,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
             base_task.failure_reason,
             BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
-        self.assertTrue(evm_task.completed)
         self.assertEqual(OnchainTransfer.objects.count(), 0)
         webhook_mock.assert_called_once()
 
@@ -1864,7 +1920,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
-        self.assertFalse(evm_task.completed)
         webhook_mock.assert_not_called()
 
     @patch("withdrawals.service.WebhookService.create_event")
@@ -1897,7 +1952,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
         self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
         self.assertEqual(base_task.result, BroadcastTaskResult.SUCCESS)
-        self.assertTrue(evm_task.completed)
         webhook_mock.assert_called_once()
 
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -1933,7 +1987,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
         base_task.refresh_from_db()
         self.assertGreater(evm_task.last_attempt_at, old_attempt_at)
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
-        self.assertFalse(evm_task.completed)
         send_raw_mock.assert_called_once()
 
     @patch("withdrawals.service.WebhookService.create_event")
@@ -1985,7 +2038,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
         self.assertEqual(base_task.result, BroadcastTaskResult.SUCCESS)
         self.assertEqual(base_task.tx_hash, old_hash)
-        self.assertTrue(evm_task.completed)
         webhook_mock.assert_called_once()
 
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -2019,7 +2071,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
         InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
 
         evm_task.refresh_from_db()
-        self.assertFalse(evm_task.completed)
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
 
 
@@ -3040,3 +3091,79 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
         self.assertEqual(len(results), self.THREAD_COUNT)
         for _addr_str, nonce in results:
             self.assertEqual(nonce, 0)
+
+    def test_concurrent_1000_tasks_nonce_sequential_0_to_999(self):
+        """1000 个线程并发创建任务，验证 nonce 严格从 0 递增到 999。
+
+        同时验证数据库触发器 trg_evm_broadcast_task_nonce_sequential
+        在高并发下与 AddressChainState 行锁协同工作，不会出现跳跃或重复。
+        """
+        task_count = 1000
+        # 分批启动线程，每批 50 个，避免一次性开启过多连接
+        batch_size = 50
+        results: list[int] = []
+        errors: list[Exception] = []
+        lock = threading.Lock()
+        recipient = Web3.to_checksum_address(
+            "0x000000000000000000000000000000000000CC02"
+        )
+
+        def schedule(batch_barrier: threading.Barrier) -> None:
+            close_old_connections()
+            try:
+                batch_barrier.wait(timeout=10)
+                task = EvmBroadcastTask.schedule_native(
+                    address=self.address,
+                    chain=self.chain,
+                    to=recipient,
+                    value=1,
+                    transfer_type=TransferType.Withdrawal,
+                )
+                with lock:
+                    results.append(task.nonce)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+            finally:
+                connections.close_all()
+
+        # 分批执行，每批线程同时起跑
+        for batch_start in range(0, task_count, batch_size):
+            current_batch = min(batch_size, task_count - batch_start)
+            barrier = threading.Barrier(current_batch)
+            threads = [
+                threading.Thread(target=schedule, args=(barrier,))
+                for _ in range(current_batch)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=60)
+
+        self.assertFalse(errors, f"线程异常（共 {len(errors)} 个）: {errors[:5]}")
+        self.assertEqual(len(results), task_count)
+
+        # 核心断言：nonce 恰好是 {0, 1, 2, ..., 999}
+        self.assertEqual(sorted(results), list(range(task_count)))
+
+        # 数据库记录数一致
+        db_count = EvmBroadcastTask.objects.filter(
+            address=self.address, chain=self.chain
+        ).count()
+        self.assertEqual(db_count, task_count)
+
+        # AddressChainState.next_nonce 正确推进
+        from chains.models import AddressChainState
+
+        state = AddressChainState.objects.get(
+            address=self.address, chain=self.chain
+        )
+        self.assertEqual(state.next_nonce, task_count)
+
+        # 数据库层面无空洞：max(nonce) == count - 1
+        from django.db.models import Max
+
+        max_nonce = EvmBroadcastTask.objects.filter(
+            address=self.address, chain=self.chain
+        ).aggregate(m=Max("nonce"))["m"]
+        self.assertEqual(max_nonce, task_count - 1)

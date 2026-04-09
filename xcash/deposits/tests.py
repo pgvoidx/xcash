@@ -29,9 +29,7 @@ from deposits.service import DepositService
 from deposits.tasks import gather_deposits
 from evm.models import EvmBroadcastTask
 from projects.models import Project
-from projects.models import RecipientAddress
 from users.models import Customer
-from users.models import User
 
 
 class DepositServiceCoreTests(TestCase):

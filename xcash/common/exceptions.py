@@ -19,7 +19,3 @@ class APIError(APIException):
 
     def to_response(self) -> JsonResponse:
         return JsonResponse(self.detail, status=self.status_code)
-
-
-class EventFailedError(Exception):
-    pass

@@ -9,12 +9,3 @@ class RejectAll(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         return False
-
-
-class IsSuperUser(BasePermission):
-    # 后台系统级操作只允许超级管理员访问，避免普通商户误入治理入口。
-    def has_permission(self, request: Request, view):
-        return request.user.is_superuser
-
-    def has_object_permission(self, request, view, obj):
-        return request.user.is_superuser

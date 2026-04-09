@@ -14,7 +14,6 @@ from chains.models import AddressChainState
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
-from chains.models import TransferType
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
@@ -110,8 +109,6 @@ class EvmBroadcastTask(UndeletableModel):
     gas_price = models.PositiveBigIntegerField(_("Gas Price"), blank=True, null=True)
     signed_payload = models.TextField(_("已签名链上载荷"), blank=True, default="")
 
-    # completed 仅表示整笔 EVM 交易生命周期已经结束（确认成功或明确失败）。
-    completed = models.BooleanField(_("已完成"), default=False)
     last_attempt_at = models.DateTimeField(_("上次尝试时间"), blank=True, null=True)
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
 
@@ -228,11 +225,8 @@ class EvmBroadcastTask(UndeletableModel):
 
     @property
     def status(self) -> str:
-        # 对外优先展示统一父任务组合状态；广播细节继续保留在子表内部，不上浮到领域模型。
         if self.base_task_id:
             return self.base_task.display_status
-        if self.completed:
-            return "已完成"
         return "待执行"
 
     def has_lower_queued_nonce(self) -> bool:
@@ -343,10 +337,12 @@ class EvmBroadcastTask(UndeletableModel):
             return broadcast_task
 
     @staticmethod
-    def _next_nonce(address, chain, *, state: AddressChainState | None = None) -> int:
-        """为 (address, chain) 维度分配严格递增的下一个 nonce。"""
-        if state is None:
-            state = AddressChainState.acquire_for_update(address=address, chain=chain)
+    def _next_nonce(address, chain, *, state: AddressChainState) -> int:
+        """为 (address, chain) 维度分配严格递增的下一个 nonce。
+
+        调用方必须已通过 AddressChainState.acquire_for_update() 持有行锁，
+        并将锁定的 state 实例传入，确保 nonce 分配在串行化保护下进行。
+        """
         latest_nonce = (
             EvmBroadcastTask.objects.filter(address=address, chain=chain)
             .aggregate(max_nonce=models.Max("nonce"))

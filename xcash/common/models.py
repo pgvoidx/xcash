@@ -18,16 +18,3 @@ class UndeletableModel(models.Model):
     @classmethod
     def delete_queryset(cls, queryset):
         raise ProtectedError("禁止删除.", queryset)
-
-
-class SingletonModel(UndeletableModel):
-    class Meta:
-        abstract = True
-
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
-    @classmethod
-    def load(cls):
-        return cls.objects.get(pk=1)
