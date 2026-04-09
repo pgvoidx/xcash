@@ -36,7 +36,7 @@ def _to_hex(value: object) -> str:
     return hex_value.removeprefix("0x")
 
 
-def _parse_erc20_transfer_log(*, receipt: dict, tx_hash: str) -> dict | None:
+def _parse_erc20_transfer_log(*, receipt: dict) -> dict | None:
     """从 receipt 日志中解析 ERC-20 Transfer 事件。
 
     返回 {"from_address", "to_address", "value", "event_id"} 或 None。
@@ -78,7 +78,7 @@ class InternalEvmTaskCoordinator:
     """协调内部 EVM 任务的链上终局状态。
 
     对 PENDING_CHAIN 超过阈值仍未终局的任务，遍历所有历史 tx_hash 查询 receipt：
-    - 查到 receipt (status=1) -> 直接推进成功终局
+    - 查到 receipt (status=1) -> 构建 ObservedTransferPayload 喂回扫描器管线
     - 查到 receipt (status=0) -> 标记失败终局
     - 所有 hash 均无 receipt -> 交易已被 mempool 丢弃，重新广播
     """
@@ -201,20 +201,18 @@ class InternalEvmTaskCoordinator:
         base_task = evm_task.base_task
         w3 = chain.w3
 
-        # 获取 block（for timestamp）和 transaction（for native tx details）
-        block = w3.eth.get_block(receipt["blockNumber"])
-        tx = w3.eth.get_transaction(tx_hash)
-
+        block_number = int(receipt["blockNumber"])
+        block = w3.eth.get_block(block_number)
         timestamp = int(block["timestamp"])
         occurred_at = datetime.fromtimestamp(
             timestamp, tz=timezone.get_current_timezone(),
         )
-        block_number = int(receipt["blockNumber"])
 
         is_native = base_task.crypto == chain.native_coin
 
         if is_native:
-            # 原生币转账：from/to/value 从 transaction 对象取
+            # 原生币转账：需要额外 get_transaction 获取 from/to/value
+            tx = w3.eth.get_transaction(tx_hash)
             from_address = Web3.to_checksum_address(str(tx["from"]))
             to_address = Web3.to_checksum_address(str(tx["to"]))
             value = Decimal(int(tx["value"]))
@@ -223,7 +221,7 @@ class InternalEvmTaskCoordinator:
             event_id = "native:tx"
         else:
             # ERC-20 转账：从 receipt.logs 解析 Transfer 事件
-            parsed = _parse_erc20_transfer_log(receipt=receipt, tx_hash=tx_hash)
+            parsed = _parse_erc20_transfer_log(receipt=receipt)
             if parsed is None:
                 logger.warning(
                     "协调器未在 receipt 中找到 ERC-20 Transfer 日志",
