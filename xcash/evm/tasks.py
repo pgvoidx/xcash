@@ -135,7 +135,7 @@ def scan_evm_chain(chain_pk: int) -> None:
         logger.warning("EVM 自扫描 RPC 失败", chain=chain.code)
         return
 
-    internal_failed = InternalEvmTaskCoordinator.reconcile_chain(chain=chain)
+    InternalEvmTaskCoordinator.reconcile_chain(chain=chain)
 
     logger.info(
         "EVM 自扫描完成",
@@ -148,7 +148,6 @@ def scan_evm_chain(chain_pk: int) -> None:
         erc20_to=summary.erc20.to_block,
         erc20_logs=summary.erc20.observed_logs,
         erc20_created=summary.erc20.created_transfers,
-        internal_failed=internal_failed,
     )
 
 

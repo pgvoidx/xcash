@@ -30,8 +30,7 @@ class InternalEvmTaskCoordinator:
     """
 
     @classmethod
-    def reconcile_chain(cls, *, chain: Chain) -> int:
-        failed_count = 0
+    def reconcile_chain(cls, *, chain: Chain) -> None:
         queryset = (
             EvmBroadcastTask.objects.select_related("base_task", "address")
             .filter(
@@ -62,8 +61,7 @@ class InternalEvmTaskCoordinator:
                 assert tx_hash is not None  # CONFIRMED 分支一定携带命中的 hash
                 cls._finalize_confirmed_task(evm_task=evm_task, tx_hash=tx_hash)
             elif status == TxCheckStatus.FAILED:
-                if cls._finalize_failed_task(evm_task=evm_task):
-                    failed_count += 1
+                cls._finalize_failed_task(evm_task=evm_task)
             else:
                 # 所有历史 hash 都找不到 receipt，交易已被 mempool 丢弃，重新广播。
                 try:
@@ -83,8 +81,6 @@ class InternalEvmTaskCoordinator:
                         nonce=evm_task.nonce,
                     )
 
-        return failed_count
-
     @staticmethod
     def _find_receipt_across_hashes(
         *, evm_task: EvmBroadcastTask
@@ -101,9 +97,6 @@ class InternalEvmTaskCoordinator:
                 broadcast_task=evm_task.base_task
             ).values_list("hash", flat=True)
         )
-        current_hash = evm_task.base_task.tx_hash
-        if current_hash:
-            hashes.add(current_hash)
 
         for tx_hash in hashes:
             try:
