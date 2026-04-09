@@ -966,8 +966,6 @@ class OnchainTransfer(models.Model):
         )
         # 统一父任务在确认后进入稳定成功终局；业务层不需要感知广播细节。
         BroadcastTask.mark_finalized_success(chain=self.chain, tx_hash=self.hash)
-        # EVM broadcast_task 的 completed 表示整笔链上交易生命周期结束，确认后统一收口。
-        self._mark_evm_broadcast_task_completed()
 
         # Transfer 确认后更新系统账户余额（与业务类型无关，所有确认转账均触发）
         Balance.update_from_transfer(self)
@@ -1016,19 +1014,6 @@ class OnchainTransfer(models.Model):
             "need_confirmed_count": need,
             "progress": progress,  # 统一返回 0-100 整数
         }
-
-    def _mark_evm_broadcast_task_completed(self) -> None:
-        # 只有 EVM 内部链上任务会命中该更新；外部入账与非 EVM 交易会自然跳过。
-        if self.chain.type != ChainType.EVM:
-            return
-
-        from evm.models import EvmBroadcastTask
-
-        EvmBroadcastTask.objects.filter(
-            base_task__chain=self.chain,
-            base_task__tx_hash=self.hash,
-            completed=False,
-        ).update(completed=True)
 
     def _dispatch_business_confirm(self) -> None:
         """统一按 TransferType 分发确认动作，confirm() 专用。"""

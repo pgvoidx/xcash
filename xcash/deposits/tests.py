@@ -1042,7 +1042,7 @@ class DepositRemoteSignerFlowTests(TestCase):
         signer_backend.derive_address.assert_called_once()
 
     @patch("evm.models.get_signer_backend")
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
+    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.RecipientAddress.objects.filter")
     @patch.object(Chain, "w3", new_callable=PropertyMock)

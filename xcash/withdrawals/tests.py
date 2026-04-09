@@ -1174,7 +1174,7 @@ class WithdrawalReviewTests(TestCase):
 class WithdrawalRemoteSignerFlowTests(TestCase):
     @patch("evm.models.get_signer_backend")
     @patch("chains.signer.get_signer_backend")
-    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=5)
+    @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch.object(
         WithdrawalService, "_make_balance_verify_fn", return_value=lambda: None
     )
