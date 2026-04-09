@@ -188,6 +188,11 @@ class Chain(models.Model):
             from bitcoin.rpc import BitcoinRpcClient
 
             return BitcoinRpcClient(self.rpc).get_block_count()
+        if self.type == ChainType.TRON:
+            # Tron 区块轮询尚未接入专用 RPC 适配器。
+            # 过渡期对公共 update_latest_block 仅返回数据库中已知高度，
+            # 保证 active Tron 链不会在定时任务中抛异常或误推进确认流程。
+            return self.latest_block_number
         msg = f"Unsupported chain type: {self.type}"
         raise NotImplementedError(msg)
 

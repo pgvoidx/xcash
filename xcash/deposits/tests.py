@@ -9,6 +9,8 @@ from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
+from rest_framework.test import APIRequestFactory
+from rest_framework.test import force_authenticate
 from web3 import Web3
 
 from chains.models import Address
@@ -21,6 +23,7 @@ from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
 from currencies.models import Crypto
+from currencies.models import ChainToken
 from deposits.models import Deposit
 from deposits.models import DepositAddress
 from deposits.models import DepositCollection
@@ -30,6 +33,9 @@ from deposits.tasks import gather_deposits
 from evm.models import EvmBroadcastTask
 from projects.models import Project
 from users.models import Customer
+from users.models import User
+from common.error_codes import ErrorCode
+from deposits.viewsets import DepositViewSet
 
 
 class DepositServiceCoreTests(TestCase):
@@ -986,6 +992,57 @@ class DepositTransferRematchTests(TestCase):
         self.assertEqual(deposit1.collection.broadcast_task, base_task)
         schedule_transfer_mock.assert_called_once()
         ensure_native_buffer_mock.assert_called_once()
+
+
+class DepositAddressApiGuardTests(TestCase):
+    def test_address_endpoint_rejects_tron_chain_without_allocating_deposit_address(self):
+        project = Project.objects.create(
+            name="Tron Deposit Guard Project",
+            wallet=Wallet.objects.create(),
+            ip_white_list="*",
+            webhook="https://example.com/webhook",
+        )
+        trx = Crypto.objects.create(
+            name="Tron Native",
+            symbol="TRX",
+            coingecko_id="tron-native-guard",
+        )
+        usdt = Crypto.objects.create(
+            name="Tether on Tron",
+            symbol="USDT",
+            coingecko_id="tether-tron-guard",
+            decimals=6,
+        )
+        tron_chain = Chain.objects.create(
+            name="Tron Mainnet Guard",
+            code="tron-guard",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="http://tron.invalid",
+            active=True,
+            latest_block_number=321,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=tron_chain,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+        request = APIRequestFactory().get(
+            "/v1/deposit/address",
+            {"uid": "tron-user", "chain": tron_chain.code, "crypto": usdt.symbol},
+            HTTP_XC_APPID=project.appid,
+        )
+        force_authenticate(request, user=User.objects.create(username="deposit-api"))
+
+        with patch(
+            "deposits.viewsets.DepositAddress.get_address"
+        ) as get_address_mock:
+            response = DepositViewSet.as_view({"get": "address"})(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
+        get_address_mock.assert_not_called()
 
 
 @override_settings(
