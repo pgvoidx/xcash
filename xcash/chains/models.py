@@ -33,6 +33,7 @@ env = environ.Env()
 class ChainType(models.TextChoices):
     EVM = "evm", "EVM"
     BITCOIN = "btc", "Bitcoin"
+    TRON = "tron", "Tron"
 
 
 class Chain(models.Model):
@@ -90,8 +91,8 @@ class Chain(models.Model):
         verbose_name = _("链")
         verbose_name_plural = _("链")
 
-    # 当前系统只保留 EVM / Bitcoin 两类链。
-    PRODUCT_ENABLED_TYPES = (ChainType.EVM, ChainType.BITCOIN)
+    # 当前产品允许创建 EVM / Bitcoin / Tron 三类链。
+    PRODUCT_ENABLED_TYPES = (ChainType.EVM, ChainType.BITCOIN, ChainType.TRON)
 
     def __str__(self):
         return self.name
@@ -117,6 +118,10 @@ class Chain(models.Model):
                 self.is_poa = self._detect_poa()
                 # 清除 w3 缓存，确保下次访问使用新 RPC 和 POA 配置
                 self.__dict__.pop("w3", None)
+        elif self.type == ChainType.TRON:
+            self.chain_id = None
+            self.is_poa = None
+            self.confirm_block_count = 0
         elif self.type != ChainType.EVM:
             self.chain_id = None
             self.is_poa = None
@@ -127,7 +132,9 @@ class Chain(models.Model):
         """限制后台和脚本只能创建当前产品阶段启用的链类型。"""
         super().clean()
         if self.type and self.type not in self.PRODUCT_ENABLED_TYPES:
-            raise ValidationError({"type": _("当前版本仅支持创建 EVM / Bitcoin 链。")})
+            raise ValidationError(
+                {"type": _("当前版本仅支持创建 EVM / Bitcoin / Tron 链。")}
+            )
 
     def _detect_chain_id(self) -> int | None:
         """通过 RPC 获取链的 chain_id。"""
