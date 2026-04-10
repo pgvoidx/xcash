@@ -26,7 +26,8 @@ def scan_tron_chain(chain_pk: int) -> None:
     logger.info(
         "Tron USDT 扫描完成",
         chain=chain.code,
-        addresses_scanned=summary.addresses_scanned,
+        filter_addresses=summary.filter_addresses,
+        blocks_scanned=summary.blocks_scanned,
         events_seen=summary.events_seen,
         created_transfers=summary.created_transfers,
     )
@@ -40,4 +41,3 @@ def scan_active_tron_chains() -> None:
         type=ChainType.TRON,
     ).values_list("pk", flat=True):
         scan_tron_chain.delay(chain_pk)
-

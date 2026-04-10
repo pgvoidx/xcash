@@ -9,34 +9,32 @@ from tron.models import TronWatchCursor
 @admin.register(TronWatchCursor)
 class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
     actions = ("sync_selected_to_latest",)
-    ordering = ("chain__name", "watch_address")
+    ordering = ("chain__name", "contract_address")
     list_display = (
         "display_chain",
-        "watch_address",
+        "contract_address",
         "display_enabled",
         "display_lag_state",
         "display_chain_latest_block",
         "last_scanned_block",
         "last_safe_block",
         "display_scan_gap",
-        "last_event_fingerprint",
         "display_error_state",
         "display_error_summary",
         "updated_at",
     )
     list_filter = ("enabled", "chain")
-    search_fields = ("chain__name", "chain__code", "watch_address", "last_error")
+    search_fields = ("chain__name", "chain__code", "contract_address", "last_error")
     list_select_related = ("chain",)
     readonly_fields = (
         "chain",
-        "watch_address",
+        "contract_address",
         "display_enabled",
         "last_scanned_block",
         "last_safe_block",
         "display_chain_latest_block",
         "display_scan_gap",
         "display_lag_state",
-        "last_event_fingerprint",
         "last_error",
         "display_error_summary",
         "last_error_at",

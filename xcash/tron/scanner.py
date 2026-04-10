@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -14,7 +15,6 @@ from chains.models import TransferStatus
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from currencies.models import ChainToken
-from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from projects.models import RecipientAddress
 from tron.client import TronClientError
 from tron.client import TronHttpClient
@@ -24,18 +24,20 @@ from tron.models import TronWatchCursor
 
 @dataclass(frozen=True)
 class TronScanSummary:
-    addresses_scanned: int
+    filter_addresses: int
+    blocks_scanned: int
     events_seen: int
     created_transfers: int
 
 
 @dataclass(frozen=True)
 class ParsedTronTransferEvent:
-    fingerprint: str
     observed: ObservedTransferPayload
 
 
 class TronUsdtPaymentScanner:
+    _debug_bootstrapped_cursors: set[tuple[int, str]] = set()
+
     @classmethod
     def scan_chain(cls, *, chain: Chain) -> TronScanSummary:
         if chain.type != ChainType.TRON:
@@ -55,46 +57,51 @@ class TronUsdtPaymentScanner:
             )
             .get()
         )
-        watch_addresses = list(
+        filter_addresses = set(
             RecipientAddress.objects.filter(
                 chain_type=chain.type,
                 used_for_invoice=True,
             ).values_list("address", flat=True)
         )
+        cursor = cls._get_or_create_cursor(
+            chain=chain,
+            contract_address=usdt_mapping.address,
+        )
         created_transfers = 0
         events_seen = 0
+        blocks_scanned = 0
 
-        for watch_address in watch_addresses:
-            cursor = cls._get_or_create_cursor(
-                chain=chain,
-                watch_address=watch_address,
-            )
-            if not cursor.enabled:
-                continue
-
+        if cursor.enabled:
             try:
-                parsed_events = cls._collect_new_events(
-                    client=client,
-                    chain=chain,
+                cursor = cls._bootstrap_cursor_if_needed(
                     cursor=cursor,
-                    watch_address=watch_address,
-                    usdt_mapping=usdt_mapping,
+                    latest_block=latest_block,
                 )
+                start_block = cursor.last_scanned_block + 1
+                for block_number in range(start_block, latest_block + 1):
+                    parsed_events = cls._collect_block_events(
+                        client=client,
+                        chain=chain,
+                        block_number=block_number,
+                        filter_addresses=filter_addresses,
+                        usdt_mapping=usdt_mapping,
+                    )
+                    events_seen += len(parsed_events)
+                    for event in parsed_events:
+                        result = TransferService.create_observed_transfer(
+                            observed=event.observed
+                        )
+                        if result.created:
+                            created_transfers += 1
+                    blocks_scanned += 1
+                    cls._advance_cursor(
+                        cursor=cursor,
+                        latest_block=latest_block,
+                        scanned_block=block_number,
+                    )
             except TronClientError as exc:
                 cls._mark_cursor_error(cursor=cursor, exc=exc)
                 raise
-
-            events_seen += len(parsed_events)
-            for event in reversed(parsed_events):
-                result = TransferService.create_observed_transfer(observed=event.observed)
-                if result.created:
-                    created_transfers += 1
-
-            cls._advance_cursor(
-                cursor=cursor,
-                latest_block=latest_block,
-                parsed_events=parsed_events,
-            )
 
         if (
             latest_block > previous_latest_block
@@ -109,7 +116,8 @@ class TronUsdtPaymentScanner:
             block_number_updated.apply_async(args=(chain.pk,), countdown=2)
 
         return TronScanSummary(
-            addresses_scanned=len(watch_addresses),
+            filter_addresses=len(filter_addresses),
+            blocks_scanned=blocks_scanned,
             events_seen=events_seen,
             created_transfers=created_transfers,
         )
@@ -119,12 +127,12 @@ class TronUsdtPaymentScanner:
         cls,
         *,
         chain: Chain,
-        watch_address: str,
+        contract_address: str,
     ) -> TronWatchCursor:
         with transaction.atomic():
             cursor, _ = TronWatchCursor.objects.select_for_update().get_or_create(
                 chain=chain,
-                watch_address=watch_address,
+                contract_address=contract_address,
                 defaults={
                     "last_scanned_block": 0,
                     "last_safe_block": 0,
@@ -134,150 +142,207 @@ class TronUsdtPaymentScanner:
         return cursor
 
     @classmethod
-    def _collect_new_events(
+    def _bootstrap_cursor_if_needed(
+        cls,
+        *,
+        cursor: TronWatchCursor,
+        latest_block: int,
+    ) -> TronWatchCursor:
+        debug_key = (cursor.chain_id, cursor.contract_address)
+        should_reset = False
+
+        if settings.DEBUG:
+            if debug_key not in cls._debug_bootstrapped_cursors:
+                cls._debug_bootstrapped_cursors.add(debug_key)
+                should_reset = True
+        elif cursor.last_scanned_block == 0:
+            should_reset = True
+
+        if not should_reset:
+            return cursor
+
+        TronWatchCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=latest_block,
+            last_safe_block=latest_block,
+            last_error="",
+            last_error_at=None,
+            updated_at=timezone.now(),
+        )
+        cursor.last_scanned_block = latest_block
+        cursor.last_safe_block = latest_block
+        cursor.last_error = ""
+        cursor.last_error_at = None
+        return cursor
+
+    @classmethod
+    def _collect_block_events(
         cls,
         *,
         client: TronHttpClient,
         chain: Chain,
-        cursor: TronWatchCursor,
-        watch_address: str,
+        block_number: int,
+        filter_addresses: set[str],
         usdt_mapping: ChainToken,
     ) -> list[ParsedTronTransferEvent]:
         page_fingerprint: str | None = None
         collected: list[ParsedTronTransferEvent] = []
-        reached_cursor = False
+        seen_fingerprints: set[str] = set()
 
-        while not reached_cursor:
-            payload = client.list_confirmed_trc20_history(
-                address=watch_address,
+        while True:
+            payload = client.list_confirmed_contract_events(
                 contract_address=usdt_mapping.address,
+                event_name="Transfer",
+                block_number=block_number,
                 fingerprint=page_fingerprint,
             )
-            page_rows = payload.get("data") or []
-            if not page_rows:
+            if not isinstance(payload, dict):
+                raise TronClientError(
+                    f"invalid contract events payload from {chain.code}"
+                )
+            data = payload.get("data")
+            meta = payload.get("meta") or {}
+            if data is None:
+                data = []
+            if not isinstance(data, list) or not isinstance(meta, dict):
+                raise TronClientError(
+                    f"invalid contract events payload from {chain.code}"
+                )
+            if not data:
                 break
 
-            for row in page_rows:
-                tx_id = str(row.get("transaction_id") or "")
-                if not tx_id:
-                    continue
-                tx_info = client.get_transaction_info_by_id(tx_id)
-                for event in cls._parse_tx_info(
+            for row in data:
+                event = cls._parse_contract_event(
                     chain=chain,
-                    tx_info=tx_info,
-                    watch_address=watch_address,
+                    row=row,
+                    expected_block_number=block_number,
+                    filter_addresses=filter_addresses,
                     usdt_mapping=usdt_mapping,
-                ):
-                    if event.fingerprint == cursor.last_event_fingerprint:
-                        reached_cursor = True
-                        break
+                )
+                if event is not None:
                     collected.append(event)
-                if reached_cursor:
-                    break
 
-            page_fingerprint = (payload.get("meta") or {}).get("fingerprint")
+            page_fingerprint = meta.get("fingerprint")
             if not page_fingerprint:
                 break
+            if not isinstance(page_fingerprint, str):
+                raise TronClientError(
+                    f"invalid contract events fingerprint from {chain.code}"
+                )
+            if page_fingerprint in seen_fingerprints:
+                raise TronClientError(
+                    f"duplicate contract events fingerprint from {chain.code}"
+                )
+            seen_fingerprints.add(page_fingerprint)
 
         return collected
 
-    @staticmethod
-    def _parse_tx_info(
+    @classmethod
+    def _parse_contract_event(
+        cls,
         *,
         chain: Chain,
-        tx_info: dict,
-        watch_address: str,
+        row: dict,
+        expected_block_number: int,
+        filter_addresses: set[str],
         usdt_mapping: ChainToken,
-    ) -> list[ParsedTronTransferEvent]:
-        receipt = tx_info.get("receipt") or {}
-        if receipt.get("result") != "SUCCESS":
-            return []
+    ) -> ParsedTronTransferEvent | None:
+        if not isinstance(row, dict):
+            return None
 
-        block_number = int(tx_info.get("blockNumber") or 0)
-        timestamp_ms = int(tx_info.get("blockTimeStamp") or 0)
-        tx_id = str(tx_info.get("id") or "")
-        if not block_number or not timestamp_ms or not tx_id:
-            return []
+        tx_id = str(row.get("transaction_id") or "")
+        raw_event_index = row.get("event_index")
+        if raw_event_index in (None, ""):
+            return None
+        try:
+            block_number = int(row.get("block_number") or 0)
+            timestamp_ms = int(row.get("block_timestamp") or 0)
+            event_index = int(raw_event_index)
+        except (TypeError, ValueError):
+            return None
+        if not tx_id or not block_number or not timestamp_ms:
+            return None
+        if block_number != expected_block_number:
+            return None
+        if str(row.get("event_name") or "") != "Transfer":
+            return None
+
+        contract_address = str(row.get("contract_address") or "")
+        if not contract_address:
+            return None
+        try:
+            normalized_contract_address = cls._event_address_to_base58(
+                contract_address
+            )
+        except ValueError:
+            return None
+        if normalized_contract_address != usdt_mapping.address:
+            return None
+
+        result = row.get("result") or {}
+        if not isinstance(result, dict):
+            return None
+
+        try:
+            from_address = cls._event_address_to_base58(result.get("from"))
+            to_address = cls._event_address_to_base58(result.get("to"))
+        except ValueError:
+            return None
+
+        if to_address not in filter_addresses:
+            return None
+
+        try:
+            value = Decimal(str(result.get("value") or "0"))
+        except Exception:  # noqa: BLE001
+            return None
+        if value <= 0:
+            return None
 
         occurred_at = datetime.fromtimestamp(
             timestamp_ms / 1000,
             tz=timezone.get_current_timezone(),
         )
-        target_contract_hex = TronAddressCodec.base58_to_hex41(usdt_mapping.address)[
-            2:
-        ].lower()
         decimals = (
             usdt_mapping.decimals
             if usdt_mapping.decimals is not None
             else usdt_mapping.crypto.decimals
         )
-        events: list[ParsedTronTransferEvent] = []
-
-        for log_index, log in enumerate(tx_info.get("log") or []):
-            if TronUsdtPaymentScanner._normalize_hex(log.get("address")) != target_contract_hex:
-                continue
-
-            topics = list(log.get("topics") or [])
-            if len(topics) < 3:
-                continue
-            if TronUsdtPaymentScanner._normalize_hex(topics[0]) != TronUsdtPaymentScanner._normalize_hex(ERC20_TRANSFER_TOPIC0):
-                continue
-
-            try:
-                from_address = TronAddressCodec.topic_to_base58(str(topics[1]))
-                to_address = TronAddressCodec.topic_to_base58(str(topics[2]))
-            except ValueError:
-                continue
-
-            if to_address != watch_address:
-                continue
-
-            raw_value_hex = TronUsdtPaymentScanner._normalize_hex(log.get("data")) or "0"
-            value = Decimal(int(raw_value_hex, 16))
-            if value <= 0:
-                continue
-
-            events.append(
-                ParsedTronTransferEvent(
-                    fingerprint=f"{tx_id}:{log_index}",
-                    observed=ObservedTransferPayload(
-                        chain=chain,
-                        block=block_number,
-                        tx_hash=tx_id,
-                        event_id=f"trc20:{log_index}",
-                        from_address=from_address,
-                        to_address=to_address,
-                        crypto=usdt_mapping.crypto,
-                        value=value,
-                        amount=Decimal(value).scaleb(-decimals),
-                        timestamp=timestamp_ms // 1000,
-                        occurred_at=occurred_at,
-                        source="tron-scan",
-                    ),
-                )
+        return ParsedTronTransferEvent(
+            observed=ObservedTransferPayload(
+                chain=chain,
+                block=block_number,
+                tx_hash=tx_id,
+                event_id=f"trc20:{event_index}",
+                from_address=from_address,
+                to_address=to_address,
+                crypto=usdt_mapping.crypto,
+                value=value,
+                amount=value.scaleb(-decimals),
+                timestamp=timestamp_ms // 1000,
+                occurred_at=occurred_at,
+                source="tron-scan",
             )
-
-        return events
+        )
 
     @staticmethod
     def _advance_cursor(
         *,
         cursor: TronWatchCursor,
         latest_block: int,
-        parsed_events: list[ParsedTronTransferEvent],
+        scanned_block: int,
     ) -> None:
+        target_block = min(scanned_block, latest_block)
         TronWatchCursor.objects.filter(pk=cursor.pk).update(
-            last_scanned_block=max(cursor.last_scanned_block, latest_block),
-            last_safe_block=max(cursor.last_safe_block, latest_block),
-            last_event_fingerprint=(
-                parsed_events[0].fingerprint
-                if parsed_events
-                else cursor.last_event_fingerprint
-            ),
+            last_scanned_block=max(cursor.last_scanned_block, target_block),
+            last_safe_block=max(cursor.last_safe_block, target_block),
             last_error="",
             last_error_at=None,
             updated_at=timezone.now(),
         )
+        cursor.last_scanned_block = max(cursor.last_scanned_block, target_block)
+        cursor.last_safe_block = max(cursor.last_safe_block, target_block)
+        cursor.last_error = ""
+        cursor.last_error_at = None
 
     @staticmethod
     def _mark_cursor_error(*, cursor: TronWatchCursor, exc: Exception) -> None:
@@ -291,3 +356,20 @@ class TronUsdtPaymentScanner:
     def _normalize_hex(value: object) -> str:
         return str(value or "").strip().lower().removeprefix("0x")
 
+    @classmethod
+    def _event_address_to_base58(cls, value: object) -> str:
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            raise ValueError("empty tron event address")
+        if TronAddressCodec.is_valid_base58(raw_value):
+            return TronAddressCodec.normalize_base58(raw_value)
+
+        normalized = cls._normalize_hex(raw_value)
+        if len(normalized) == 40:
+            normalized = f"{TronAddressCodec.ADDRESS_HEX_PREFIX}{normalized}"
+        elif len(normalized) == 64:
+            normalized = (
+                f"{TronAddressCodec.ADDRESS_HEX_PREFIX}{normalized[-40:]}"
+            )
+
+        return TronAddressCodec.hex41_to_base58(normalized)

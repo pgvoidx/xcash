@@ -13,15 +13,9 @@ class TronWatchCursor(models.Model):
         related_name="tron_watch_cursors",
         verbose_name=_("链"),
     )
-    watch_address = AddressField(_("监听地址"))
+    contract_address = AddressField(_("合约地址"))
     last_scanned_block = models.PositiveIntegerField(_("已扫描到的区块"), default=0)
     last_safe_block = models.PositiveIntegerField(_("安全区块"), default=0)
-    last_event_fingerprint = models.CharField(
-        _("最近事件指纹"),
-        max_length=128,
-        blank=True,
-        default="",
-    )
     enabled = models.BooleanField(_("启用"), default=True)
     last_error = models.CharField(_("最近错误"), max_length=255, blank=True, default="")
     last_error_at = models.DateTimeField(_("最近错误时间"), blank=True, null=True)
@@ -31,13 +25,13 @@ class TronWatchCursor(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("chain", "watch_address"),
-                name="uniq_tron_watch_cursor_chain_watch_address",
+                fields=("chain", "contract_address"),
+                name="uniq_tron_watch_cursor_chain_contract_address",
             ),
         ]
-        ordering = ("chain_id", "watch_address")
+        ordering = ("chain_id", "contract_address")
         verbose_name = _("Tron 扫描游标")
         verbose_name_plural = verbose_name
 
     def __str__(self) -> str:
-        return f"{self.chain.code}:{self.watch_address}"
+        return f"{self.chain.code}:{self.contract_address}"

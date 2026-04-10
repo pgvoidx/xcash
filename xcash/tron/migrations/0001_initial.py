@@ -27,9 +27,9 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "watch_address",
+                    "contract_address",
                     common.fields.AddressField(
-                        db_index=True, max_length=100, verbose_name="监听地址"
+                        db_index=True, max_length=100, verbose_name="合约地址"
                     ),
                 ),
                 (
@@ -41,15 +41,6 @@ class Migration(migrations.Migration):
                 (
                     "last_safe_block",
                     models.PositiveIntegerField(default=0, verbose_name="安全区块"),
-                ),
-                (
-                    "last_event_fingerprint",
-                    models.CharField(
-                        blank=True,
-                        default="",
-                        max_length=128,
-                        verbose_name="最近事件指纹",
-                    ),
                 ),
                 ("enabled", models.BooleanField(default=True, verbose_name="启用")),
                 (
@@ -85,11 +76,11 @@ class Migration(migrations.Migration):
             options={
                 "verbose_name": "Tron 扫描游标",
                 "verbose_name_plural": "Tron 扫描游标",
-                "ordering": ("chain_id", "watch_address"),
+                "ordering": ("chain_id", "contract_address"),
                 "constraints": [
                     models.UniqueConstraint(
-                        fields=("chain", "watch_address"),
-                        name="uniq_tron_watch_cursor_chain_watch_address",
+                        fields=("chain", "contract_address"),
+                        name="uniq_tron_watch_cursor_chain_contract_address",
                     )
                 ],
             },

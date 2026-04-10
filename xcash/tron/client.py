@@ -90,3 +90,36 @@ class TronHttpClient:
             ) from exc
 
         return response.json()
+
+    def list_confirmed_contract_events(
+        self,
+        *,
+        contract_address: str,
+        event_name: str,
+        block_number: int,
+        fingerprint: str | None = None,
+        limit: int = 200,
+    ) -> dict:
+        params = {
+            "event_name": event_name,
+            "block_number": block_number,
+            "limit": limit,
+            "only_confirmed": "true",
+        }
+        if fingerprint:
+            params["fingerprint"] = fingerprint
+
+        try:
+            response = httpx.get(
+                f"{self.base_url}/v1/contracts/{contract_address}/events",
+                params=params,
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise TronClientError(
+                f"failed to fetch confirmed contract events from {self.chain.code}"
+            ) from exc
+
+        return response.json()
