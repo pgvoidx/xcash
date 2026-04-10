@@ -1,7 +1,7 @@
 ENV_FILE ?= .env.dev
 DC = docker compose --env-file $(ENV_FILE) -f docker-compose.dev.yml
 
-.PHONY: help dev-sync dev-up dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test dev-local-init dev-local-bitcoin dev-signer-migrate dev-signer-check dev-signer-e2e dev-bootstrap
+.PHONY: help dev-sync dev-up dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test dev-local-init dev-local-bitcoin dev-signer-migrate dev-signer-check dev-signer-e2e dev-bootstrap
 
 help:
 	@echo "可用命令："
@@ -15,7 +15,9 @@ help:
 	@echo "  make dev-chain-logs   查看本地区块链容器日志"
 	@echo "  make dev-ps           查看依赖容器状态"
 	@echo "  make dev-web          宿主机启动 Django"
-	@echo "  make dev-worker       宿主机启动 Celery worker"
+	@echo "  make dev-worker       宿主机启动业务 Celery worker"
+	@echo "  make dev-worker-stress 宿主机启动 stress Celery worker"
+	@echo "  make dev-worker-scan  宿主机启动 scan Celery worker"
 	@echo "  make dev-beat         宿主机启动 Celery beat"
 	@echo "  make dev-manage ARGS='check'"
 	@echo "  make dev-mm           宿主机执行 Django makemigrations"
@@ -66,6 +68,12 @@ dev-web:
 
 dev-worker:
 	ENV_FILE=$(ENV_FILE) ./scripts/dev-worker.sh
+
+dev-worker-stress:
+	ENV_FILE=$(ENV_FILE) ./scripts/dev-worker-stress.sh
+
+dev-worker-scan:
+	ENV_FILE=$(ENV_FILE) ./scripts/dev-worker-scan.sh
 
 dev-beat:
 	ENV_FILE=$(ENV_FILE) ./scripts/dev-beat.sh

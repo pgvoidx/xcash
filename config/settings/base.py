@@ -413,6 +413,24 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = env.int(
 CELERY_WORKER_POOL_RESTARTS = True  # 允许 Worker 池重启
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False  # 减少日志开销
 
+# 队列隔离：扫描任务路由到独立队列，防止被 confirm/broadcast/process 高频任务饥饿。
+CELERY_TASK_ROUTES = {
+    "evm.tasks.scan_evm_chain": {"queue": "scan"},
+    "evm.tasks.scan_active_evm_chains": {"queue": "scan"},
+    "tron.tasks.scan_tron_chain": {"queue": "scan"},
+    "tron.tasks.scan_active_tron_chains": {"queue": "scan"},
+    "bitcoin.tasks.scan_bitcoin_receipts": {"queue": "scan"},
+    "stress.tasks.prepare_stress": {"queue": "stress"},
+    "stress.tasks.execute_stress_case": {"queue": "stress"},
+    "stress.tasks.execute_withdrawal_case": {"queue": "stress"},
+    "stress.tasks.execute_deposit_case": {"queue": "stress"},
+    "stress.tasks.check_webhook_timeout": {"queue": "stress"},
+    "stress.tasks.check_withdrawal_webhook_timeout": {"queue": "stress"},
+    "stress.tasks.check_deposit_webhook_timeout": {"queue": "stress"},
+    "stress.tasks.finalize_stress_timeout": {"queue": "stress"},
+    "stress.tasks.verify_deposit_collection": {"queue": "stress"},
+}
+
 # -------------------------------------------------------------------------------
 # django-rest-framework - https://www.django-rest-framework.org/api-guide/settings/
 REST_FRAMEWORK = {

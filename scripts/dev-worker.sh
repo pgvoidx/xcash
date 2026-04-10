@@ -21,6 +21,7 @@ export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 export REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 export REDIS_PORT="${REDIS_PORT:-6379}"
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+export CELERY_BUSINESS_WORKER_CONCURRENCY="${CELERY_BUSINESS_WORKER_CONCURRENCY:-8}"
 
-# 开发环境仅对 worker 开启热重载；beat 单独运行，避免 watchfiles 重启后遗留重复调度器。
-exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l INFO --pool=threads --concurrency=8"
+# 默认业务队列只消费 celery，scan / stress 由独立 worker 负责，避免相互饥饿。
+exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l INFO --pool=threads --concurrency=${CELERY_BUSINESS_WORKER_CONCURRENCY} -Q celery"
