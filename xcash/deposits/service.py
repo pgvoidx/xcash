@@ -433,6 +433,22 @@ class DepositService:
                 return True
 
         # --- Gas 不足，发起补充 ---
+
+        # 防重复：如果该充值地址已有尚未广播的 Gas 补充任务（stage=queued 且无 tx_hash），
+        # 跳过本轮等待广播即可。已广播或已终结的 GasRecharge 不阻塞新请求。
+        deposit_addr_record = DepositAddress.objects.get(
+            customer=deposit.customer,
+            chain_type=chain.type,
+        )
+        has_pending_recharge = GasRecharge.objects.filter(
+            deposit_address=deposit_addr_record,
+            recharged_at__isnull=True,
+            broadcast_task__stage="queued",
+            broadcast_task__tx_hash="",
+        ).exists()
+        if has_pending_recharge:
+            return False
+
         recharge_raw = min(5 * erc20_gas_cost, 10 * native_gas_cost)
         if recharge_raw <= 0:
             return False
@@ -451,11 +467,6 @@ class DepositService:
                 to=deposit_address.address,
                 value_raw=recharge_raw,
                 transfer_type=TransferType.GasRecharge,
-            )
-            # 记录 Gas 补充操作，供后续链上匹配和审计追踪
-            deposit_addr_record = DepositAddress.objects.get(
-                customer=deposit.customer,
-                chain_type=chain.type,
             )
             GasRecharge.objects.create(
                 deposit_address=deposit_addr_record,

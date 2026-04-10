@@ -22,12 +22,11 @@ from invoices.models import Invoice
 from projects.models import Project
 from projects.models import RecipientAddress
 
+from .models import DepositStressCase
 from .models import InvoiceStressCase
-from .models import InvoiceStressCaseStatus
 from .models import StressRun
 from .models import StressRunStatus
 from .models import WithdrawalStressCase
-from .models import WithdrawalStressCaseStatus
 
 logger = structlog.get_logger()
 
@@ -63,9 +62,14 @@ class StressService:
             project = _create_stress_project(stress)
             _setup_recipient_addresses(project)
 
-            # 提币测试需要 Wallet + Vault 地址
-            if stress.withdrawal_count > 0:
+            # 提币或充币测试需要 Wallet + Vault 地址
+            if stress.withdrawal_count > 0 or stress.deposit_count > 0:
                 _setup_wallet_for_withdrawal(project)
+
+            # 充币测试：设置 gather_worth=0 以确保任意金额立即触发归集
+            if stress.deposit_count > 0:
+                project.gather_worth = Decimal("0")
+                project.save(update_fields=["gather_worth"])
 
             stress.project = project
             stress.error = ""
@@ -79,11 +83,15 @@ class StressService:
                 wd_cases = _build_withdrawal_cases(stress)
                 WithdrawalStressCase.objects.bulk_create(wd_cases)
 
+            if stress.deposit_count > 0:
+                dep_cases = _build_deposit_cases(stress)
+                DepositStressCase.objects.bulk_create(dep_cases)
+
             stress.status = StressRunStatus.READY
             stress.save(update_fields=["status"])
 
         # Vault 注资在事务提交后执行，确保 BTC watch-only 同步已调度
-        if stress.withdrawal_count > 0:
+        if stress.withdrawal_count > 0 or stress.deposit_count > 0:
             _fund_vault_for_withdrawal(stress.project)
 
         logger.info(
@@ -91,14 +99,17 @@ class StressService:
             stress_id=stress.pk,
             count=stress.count,
             withdrawal_count=stress.withdrawal_count,
+            deposit_count=stress.deposit_count,
         )
 
     @staticmethod
     def start(stress: StressRun) -> None:
         """触发测试执行。"""
+        from .tasks import execute_deposit_case
         from .tasks import execute_stress_case
         from .tasks import execute_withdrawal_case
         from .tasks import finalize_stress_timeout
+        from .tasks import verify_deposit_collection
 
         stress.status = StressRunStatus.RUNNING
         stress.started_at = timezone.now()
@@ -114,6 +125,21 @@ class StressService:
             eta = stress.started_at + timedelta(seconds=case.scheduled_offset)
             execute_withdrawal_case.apply_async(args=[case.pk], eta=eta)
             max_offset = max(max_offset, case.scheduled_offset)
+
+        for case in stress.deposit_cases.all().only("id", "scheduled_offset"):
+            eta = stress.started_at + timedelta(seconds=case.scheduled_offset)
+            execute_deposit_case.apply_async(args=[case.pk], eta=eta)
+            max_offset = max(max_offset, case.scheduled_offset)
+
+        # 充币归集验证兜底：最大调度偏移 + 20 分钟
+        # webhook 触发是主路径，这里是安全网，verify_deposit_collection 本身幂等。
+        if stress.deposit_count > 0:
+            collection_eta = stress.started_at + timedelta(
+                seconds=max_offset + 20 * 60
+            )
+            verify_deposit_collection.apply_async(
+                args=[stress.pk], eta=collection_eta
+            )
 
         # 兜底超时：最大调度偏移 + 30 分钟
         timeout_seconds = max_offset + 30 * 60
@@ -145,7 +171,11 @@ class StressService:
 
             update_fields = ["succeeded", "failed", "skipped"]
 
-            total_expected = stress_run.count + stress_run.withdrawal_count
+            total_expected = (
+                stress_run.count
+                + stress_run.withdrawal_count
+                + stress_run.deposit_count
+            )
             if stress_run.total_finished >= total_expected:
                 stress_run.status = StressRunStatus.COMPLETED
                 stress_run.finished_at = timezone.now()
@@ -233,6 +263,30 @@ class StressService:
         )
         resp.raise_for_status()
         return resp.json()
+
+    @staticmethod
+    def get_deposit_address(case: DepositStressCase) -> str:
+        """调用 API 获取客户充值地址。"""
+        project = case.stress_run.project
+        base_url = settings.STRESS_WEBHOOK_BASE_URL
+        url = f"{base_url}/v1/deposit/address"
+
+        # GET 请求 body 为空，HMAC 签名仍需携带
+        headers = StressService._build_hmac_headers(project, "")
+        resp = httpx.get(
+            url,
+            params={
+                "uid": case.customer_uid,
+                "chain": case.chain,
+                "crypto": case.crypto,
+            },
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            detail = _extract_error_detail(resp)
+            raise RuntimeError(f"获取充值地址 API {resp.status_code}: {detail}")
+        return resp.json()["deposit_address"]
 
     @staticmethod
     def create_withdrawal(case: WithdrawalStressCase) -> dict:
@@ -459,6 +513,66 @@ def _build_withdrawal_cases(stress: StressRun) -> list[WithdrawalStressCase]:
                 crypto=crypto_symbol,
                 chain=chain_code,
                 to_address=to_address,
+                amount=amount,
+            )
+        )
+
+    random.shuffle(cases)
+    for idx, case in enumerate(cases, 1):
+        case.sequence = idx
+    return cases
+
+
+STRESS_DEPOSIT_METHOD_CHOICES = (
+    ("ETH", "ethereum-local"),
+    ("USDT", "ethereum-local"),
+)
+
+_DEPOSIT_AMOUNT_RANGES = {
+    "ETH": (Decimal("0.001"), Decimal("0.05")),
+    "USDT": (Decimal("1"), Decimal("100")),
+}
+
+
+def _build_deposit_cases(stress: StressRun) -> list[DepositStressCase]:
+    """构建本轮待执行的 DepositStressCase 列表。
+
+    将 deposit_count 均匀分配到 deposit_customer_count 个客户，
+    每个 case 随机选择 ETH 或 USDT on ethereum-local。
+    """
+    customer_count = stress.deposit_customer_count
+    deposit_count = stress.deposit_count
+
+    # 生成客户 UID 列表
+    customer_uids = [f"STRESS-{stress.pk}-C{i}" for i in range(customer_count)]
+
+    # 均匀分配充值次数到各客户
+    base_per_customer = deposit_count // customer_count
+    remainder = deposit_count % customer_count
+    customer_deposits = []
+    for i in range(customer_count):
+        n = base_per_customer + (1 if i < remainder else 0)
+        customer_deposits.extend([customer_uids[i]] * n)
+
+    total_seconds = deposit_count / 10.0
+    mu = total_seconds / 2
+    sigma = total_seconds / 6
+
+    cases = []
+    for i, uid in enumerate(customer_deposits, 1):
+        offset = max(0.0, min(total_seconds, random.gauss(mu, sigma)))
+        crypto_symbol, chain_code = random.choice(STRESS_DEPOSIT_METHOD_CHOICES)  # noqa: S311
+        lo, hi = _DEPOSIT_AMOUNT_RANGES[crypto_symbol]
+        amount = Decimal(str(round(random.uniform(float(lo), float(hi)), 8)))  # noqa: S311
+
+        cases.append(
+            DepositStressCase(
+                stress_run=stress,
+                sequence=i,
+                scheduled_offset=offset,
+                customer_uid=uid,
+                crypto=crypto_symbol,
+                chain=chain_code,
                 amount=amount,
             )
         )

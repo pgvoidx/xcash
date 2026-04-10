@@ -95,6 +95,7 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["anon"] = env.str(
     default="10000/minute",
 )
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["withdrawal_create"] = "10000/minute"
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]["deposit_address"] = "10000/minute"
 
 # Stress app 侧边栏注入
 # ------------------------------------------------------------------------------
@@ -121,6 +122,11 @@ UNFOLD["SIDEBAR"]["navigation"].insert(
                 "title": _("提币测试"),
                 "icon": "upload",
                 "link": reverse_lazy("admin:stress_withdrawalstresscase_changelist"),
+            },
+            {
+                "title": _("充币测试"),
+                "icon": "download",
+                "link": reverse_lazy("admin:stress_depositstresscase_changelist"),
             },
         ],
     },

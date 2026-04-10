@@ -4,15 +4,19 @@ from datetime import timedelta
 
 import structlog
 from celery import shared_task
+from django.db import models
 from django.db import transaction
 from django.utils import timezone
 
+from .models import DepositStressCase
+from .models import DepositStressCaseStatus
 from .models import InvoiceStressCase
 from .models import InvoiceStressCaseStatus
 from .models import StressRun
 from .models import StressRunStatus
 from .models import WithdrawalStressCase
 from .models import WithdrawalStressCaseStatus
+from common.decorators import singleton_task
 from .payment import simulate_payment
 from .service import StressService
 
@@ -216,13 +220,25 @@ def finalize_stress_timeout(stress_run_id: int) -> None:
             WithdrawalStressCaseStatus.FAILED,
             WithdrawalStressCaseStatus.SKIPPED,
         }
+        terminal_deposit = {
+            DepositStressCaseStatus.SUCCEEDED,
+            DepositStressCaseStatus.FAILED,
+            DepositStressCaseStatus.SKIPPED,
+        }
 
         non_terminal_invoices = stress_run.cases.exclude(status__in=terminal_invoice)
         non_terminal_withdrawals = stress_run.withdrawal_cases.exclude(
             status__in=terminal_withdrawal
         )
+        non_terminal_deposits = stress_run.deposit_cases.exclude(
+            status__in=terminal_deposit
+        )
 
-        skipped_count = non_terminal_invoices.count() + non_terminal_withdrawals.count()
+        skipped_count = (
+            non_terminal_invoices.count()
+            + non_terminal_withdrawals.count()
+            + non_terminal_deposits.count()
+        )
         if skipped_count == 0:
             return
 
@@ -234,6 +250,11 @@ def finalize_stress_timeout(stress_run_id: int) -> None:
         )
         non_terminal_withdrawals.update(
             status=WithdrawalStressCaseStatus.SKIPPED,
+            error="压测整轮超时，任务未执行",
+            finished_at=now,
+        )
+        non_terminal_deposits.update(
+            status=DepositStressCaseStatus.SKIPPED,
             error="压测整轮超时，任务未执行",
             finished_at=now,
         )
@@ -268,3 +289,218 @@ def check_webhook_timeout(case_id: int) -> None:
         case.save(update_fields=["status", "error", "finished_at"])
 
     StressService.on_case_finished(case)
+
+
+# ── 充币压测 ──────────────────────────────────────────────────
+
+
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180)
+def execute_deposit_case(case_id: int) -> None:
+    """执行单个 DepositStressCase 的完整流程：获取地址 → 模拟充值 → 等待 webhook。"""
+    try:
+        case = DepositStressCase.objects.select_related("stress_run__project").get(
+            pk=case_id
+        )
+    except DepositStressCase.DoesNotExist:
+        return
+
+    if case.status != DepositStressCaseStatus.PENDING:
+        return
+
+    case.started_at = timezone.now()
+    case.status = DepositStressCaseStatus.CREATING
+    case.save(update_fields=["started_at", "status"])
+
+    try:
+        _execute_deposit(case)
+    except Exception as exc:
+        logger.exception("stress.deposit_case.failed", case_id=case.pk)
+        case.status = DepositStressCaseStatus.FAILED
+        case.error = str(exc)[:2000]
+        case.finished_at = timezone.now()
+        case.save(update_fields=["status", "error", "finished_at"])
+        StressService.on_case_finished(case)
+
+
+def _execute_deposit(case: DepositStressCase) -> None:
+    """DepositStressCase 执行核心流程。"""
+    # 阶段 1: 获取充值地址
+    deposit_address = StressService.get_deposit_address(case)
+    case.deposit_address = deposit_address
+    case.save(update_fields=["deposit_address"])
+
+    # 阶段 2: 模拟链上充值
+    # 等待 2 秒，确保区块时间戳晚于充值地址创建时间
+    time.sleep(2)
+    case.status = DepositStressCaseStatus.PAYING
+    case.save(update_fields=["status"])
+
+    payment_result = simulate_payment(
+        to_address=case.deposit_address,
+        chain_code=case.chain,
+        crypto_symbol=case.crypto,
+        amount=case.amount,
+        payment_ref=f"deposit-{case.pk}",
+    )
+    case.tx_hash = payment_result["tx_hash"]
+    case.payer_address = payment_result["payer_address"]
+    case.status = DepositStressCaseStatus.PAID
+    case.save(update_fields=["tx_hash", "payer_address", "status"])
+
+    # 派发超时检查任务（15 分钟后）
+    check_deposit_webhook_timeout.apply_async(
+        args=[case.pk],
+        eta=timezone.now() + timedelta(minutes=15),
+    )
+
+
+@shared_task(ignore_result=True)
+def check_deposit_webhook_timeout(case_id: int) -> None:
+    """检查 DepositStressCase 是否在超时前收到了 webhook。"""
+    with transaction.atomic():
+        try:
+            case = DepositStressCase.objects.select_for_update().get(pk=case_id)
+        except DepositStressCase.DoesNotExist:
+            return
+
+        if case.status != DepositStressCaseStatus.PAID:
+            return
+
+        case.status = DepositStressCaseStatus.FAILED
+        case.error = "webhook 超时未收到（15 分钟）"
+        case.finished_at = timezone.now()
+        case.save(update_fields=["status", "error", "finished_at"])
+
+    StressService.on_case_finished(case)
+    _maybe_trigger_collection_verification(case.stress_run_id)
+
+
+def _maybe_trigger_collection_verification(stress_run_id: int) -> None:
+    """延迟调度归集验证任务。
+
+    并发 webhook 处理时存在竞态：每个 handler 提交自己的 case 后检查
+    其他 case 状态，但其他 handler 的事务可能尚未提交，导致所有 handler
+    都认为还有 case 在 PAID 状态而不触发验证。
+
+    解决方案：无条件延迟 15 秒调度。verify_deposit_collection 本身
+    幂等且会检查前置条件，多次调度不会重复执行。
+    """
+    verify_deposit_collection.apply_async(
+        args=[stress_run_id],
+        countdown=15,
+    )
+
+
+@shared_task(ignore_result=True, soft_time_limit=360, time_limit=420)
+@singleton_task(timeout=420, use_params=True)
+def verify_deposit_collection(stress_run_id: int) -> None:
+    """Phase 2：触发归集并验证所有 WEBHOOK_OK 的 deposit cases 是否被正确归集。"""
+    from deposits.models import Deposit
+    from deposits.tasks import gather_deposits as _gather_deposits_task
+
+    # 前置条件：如果还有 case 尚未通过 webhook 阶段，提前返回
+    pre_webhook_states = {
+        DepositStressCaseStatus.PENDING,
+        DepositStressCaseStatus.CREATING,
+        DepositStressCaseStatus.PAYING,
+        DepositStressCaseStatus.PAID,
+    }
+    if DepositStressCase.objects.filter(
+        stress_run_id=stress_run_id,
+        status__in=pre_webhook_states,
+    ).exists():
+        return
+
+    try:
+        stress = StressRun.objects.select_related("project").get(pk=stress_run_id)
+    except StressRun.DoesNotExist:
+        return
+
+    webhook_ok_cases = list(
+        DepositStressCase.objects.filter(
+            stress_run=stress,
+            status=DepositStressCaseStatus.WEBHOOK_OK,
+        )
+    )
+    if not webhook_ok_cases:
+        logger.info(
+            "stress.deposit_collection.no_webhook_ok_cases",
+            stress_run_id=stress_run_id,
+        )
+        return
+
+    # 循环触发归集，最多等待 5 分钟
+    # Transfer.hash 带 0x 前缀，case.tx_hash 可能不带，构建两种形式用于匹配
+    tx_hashes = []
+    for c in webhook_ok_cases:
+        h = c.tx_hash
+        tx_hashes.append(h)
+        if not h.startswith("0x"):
+            tx_hashes.append(f"0x{h}")
+        else:
+            tx_hashes.append(h.removeprefix("0x"))
+    deadline = timezone.now() + timedelta(minutes=5)
+    while timezone.now() < deadline:
+        # 同步调用归集逻辑
+        try:
+            _gather_deposits_task()
+        except Exception:
+            logger.warning("stress.deposit_collection.gather_failed", exc_info=True)
+
+        # 检查所有关联 Deposit 是否归集完成
+        uncollected = Deposit.objects.filter(
+            transfer__hash__in=tx_hashes,
+            customer__project=stress.project,
+            status="completed",
+        ).filter(
+            models.Q(collection__isnull=True)
+            | models.Q(collection__collected_at__isnull=True)
+        ).count()
+
+        if uncollected == 0:
+            logger.info(
+                "stress.deposit_collection.all_collected",
+                stress_run_id=stress_run_id,
+            )
+            break
+
+        time.sleep(30)
+
+    # 逐个验证归集结果
+    for case in webhook_ok_cases:
+        # Transfer.hash 带 0x，case.tx_hash 可能不带
+        h = case.tx_hash
+        hash_variants = [h, f"0x{h}"] if not h.startswith("0x") else [h, h.removeprefix("0x")]
+        deposit = (
+            Deposit.objects.filter(
+                transfer__hash__in=hash_variants,
+                customer__project=stress.project,
+            )
+            .select_related("collection")
+            .first()
+        )
+
+        if (
+            deposit
+            and deposit.collection
+            and deposit.collection.collected_at is not None
+        ):
+            case.collection_verified = True
+            case.collection_hash = deposit.collection.collection_hash or ""
+            case.status = DepositStressCaseStatus.SUCCEEDED
+        else:
+            case.status = DepositStressCaseStatus.FAILED
+            reason = "未找到 Deposit 记录" if not deposit else "归集未完成"
+            case.error = reason
+
+        case.finished_at = timezone.now()
+        case.save(
+            update_fields=[
+                "collection_verified",
+                "collection_hash",
+                "status",
+                "error",
+                "finished_at",
+            ]
+        )
+        StressService.on_case_finished(case)

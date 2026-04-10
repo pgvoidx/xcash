@@ -175,9 +175,15 @@ class DepositServiceCoreTests(TestCase):
     # -- _ensure_gas_and_check 异常容错 --
 
     @patch("evm.models.EvmBroadcastTask.schedule_transfer", side_effect=RuntimeError("vault RPC timeout"))
+    @patch("deposits.service.GasRecharge.objects.filter")
+    @patch("deposits.service.DepositAddress.objects.get")
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_ensure_gas_and_check_returns_false_on_send_failure(self, _gp, schedule_mock):
+    def test_ensure_gas_and_check_returns_false_on_send_failure(
+        self, _gp, da_get_mock, gr_filter_mock, schedule_mock
+    ):
         # Gas 补充交易失败时应返回 False，允许后续归集跳过。
+        da_get_mock.return_value = SimpleNamespace(id=1)
+        gr_filter_mock.return_value.exists.return_value = False
         native_coin = SimpleNamespace(
             symbol="ETH",
             get_decimals=Mock(return_value=18),
@@ -506,12 +512,14 @@ class DepositServiceDecimalsTests(SimpleTestCase):
         self.assertFalse(should_collect)
 
     @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.GasRecharge.objects.filter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=20_000_000_000)
     def test_ensure_gas_and_check_uses_correct_recharge_formula(
-        self, _gp, schedule_mock, _da, _gr
+        self, _gp, schedule_mock, _da, gr_filter_mock, _gr
     ):
+        gr_filter_mock.return_value.exists.return_value = False
         # Gas 补充金额必须按 min(5*erc20_gas_cost, 10*native_gas_cost) 公式换算。
         # native: 20G * 50k = 10^15; erc20: 20G * 100k = 2*10^15
         # min(5 * 2*10^15, 10 * 10^15) = 10^16
@@ -605,10 +613,12 @@ class EnsureGasAndCheckTests(SimpleTestCase):
         self.assertTrue(result)
 
     @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.GasRecharge.objects.filter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_native_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, _gr):
+    def test_native_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, gr_filter_mock, _gr):
+        gr_filter_mock.return_value.exists.return_value = False
         # 原生币余额恰好等于归集金额（无多余 gas），应补充 gas 并跳过。
         deposit, addr, adapter, vault, _ = self._make_fixtures(
             crypto_is_native=True, balance=10**18
@@ -634,10 +644,12 @@ class EnsureGasAndCheckTests(SimpleTestCase):
         self.assertTrue(result)
 
     @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.GasRecharge.objects.filter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_token_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, _gr):
+    def test_token_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, gr_filter_mock, _gr):
+        gr_filter_mock.return_value.exists.return_value = False
         # 代币归集时原生币余额不足，应补充并跳过。
         deposit, addr, adapter, vault, _ = self._make_fixtures(
             crypto_is_native=False, native_balance=0
@@ -660,10 +672,12 @@ class EnsureGasAndCheckTests(SimpleTestCase):
         self.assertEqual(total, Decimal("4.5"))
 
     @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.GasRecharge.objects.filter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=20_000_000_000)
-    def test_gas_recharge_uses_min_formula(self, _gp, schedule_mock, _da, _gr):
+    def test_gas_recharge_uses_min_formula(self, _gp, schedule_mock, _da, gr_filter_mock, _gr):
+        gr_filter_mock.return_value.exists.return_value = False
         # Gas 补充金额 = min(5*erc20_gas, 10*native_gas)。
         # native: 20G * 50k = 10^15; erc20: 20G * 100k = 2*10^15
         # 10 * 10^15 = 10^16; 5 * 2*10^15 = 10^16 → value_raw = 10^16

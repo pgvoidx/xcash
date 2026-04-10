@@ -6,6 +6,7 @@ from django.utils.translation import gettext_lazy as _
 from unfold.admin import ModelAdmin
 from unfold.admin import TabularInline
 
+from .models import DepositStressCase
 from .models import InvoiceStressCase
 from .models import StressRun
 from .models import StressRunStatus
@@ -65,6 +66,32 @@ class WithdrawalStressCaseInline(TabularInline):
         return False
 
 
+class DepositStressCaseInline(TabularInline):
+    model = DepositStressCase
+    fields = (
+        "sequence",
+        "status",
+        "customer_uid",
+        "crypto",
+        "chain",
+        "amount",
+        "tx_hash",
+        "webhook_signature_ok",
+        "webhook_payload_ok",
+        "webhook_nonce_ok",
+        "webhook_timestamp_ok",
+        "collection_verified",
+        "error",
+    )
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+    show_change_link = True
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(StressRun)
 class StressRunAdmin(ModelAdmin):
     inlines = ()
@@ -73,6 +100,8 @@ class StressRunAdmin(ModelAdmin):
         "name",
         "count",
         "withdrawal_count",
+        "deposit_count",
+        "deposit_customer_count",
         "status",
         "succeeded",
         "failed",
@@ -97,11 +126,13 @@ class StressRunAdmin(ModelAdmin):
 
     def get_fields(self, request, obj=None):
         if obj is None:
-            return ("name", "count", "withdrawal_count")
+            return ("name", "count", "withdrawal_count", "deposit_count", "deposit_customer_count")
         return (
             "name",
             "count",
             "withdrawal_count",
+            "deposit_count",
+            "deposit_customer_count",
             "status",
             "project",
             "succeeded",
@@ -186,6 +217,37 @@ class InvoiceStressCaseAdmin(ModelAdmin):
     )
     list_filter = ("stress_run", "status")
     search_fields = ("invoice_sys_no", "invoice_out_no", "tx_hash")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DepositStressCase)
+class DepositStressCaseAdmin(ModelAdmin):
+    list_display = (
+        "stress_run",
+        "sequence",
+        "status",
+        "customer_uid",
+        "crypto",
+        "chain",
+        "amount",
+        "tx_hash",
+        "webhook_received",
+        "webhook_signature_ok",
+        "webhook_payload_ok",
+        "webhook_nonce_ok",
+        "webhook_timestamp_ok",
+        "collection_verified",
+    )
+    list_filter = ("stress_run", "status")
+    search_fields = ("customer_uid", "tx_hash", "collection_hash")
 
     def has_add_permission(self, request):
         return False
