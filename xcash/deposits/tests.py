@@ -995,6 +995,47 @@ class DepositTransferRematchTests(TestCase):
 
 
 class DepositAddressApiGuardTests(TestCase):
+    def test_address_endpoint_rejects_bitcoin_chain_without_allocating_deposit_address(
+        self,
+    ):
+        project = Project.objects.create(
+            name="Bitcoin Deposit Guard Project",
+            wallet=Wallet.objects.create(),
+            ip_white_list="*",
+            webhook="https://example.com/webhook",
+        )
+        btc = Crypto.objects.create(
+            name="Bitcoin Native",
+            symbol="BTC-DEPOSIT-GUARD",
+            coingecko_id="bitcoin-native-guard",
+            decimals=8,
+        )
+        bitcoin_chain = Chain.objects.create(
+            name="Bitcoin Mainnet Guard",
+            code="btc-guard",
+            type=ChainType.BITCOIN,
+            native_coin=btc,
+            rpc="http://bitcoin.invalid",
+            active=True,
+            latest_block_number=321,
+        )
+        request = APIRequestFactory().get(
+            "/v1/deposit/address",
+            {"uid": "btc-user", "chain": bitcoin_chain.code, "crypto": btc.symbol},
+            HTTP_XC_APPID=project.appid,
+        )
+        force_authenticate(
+            request,
+            user=User.objects.create(username="deposit-api-btc"),
+        )
+
+        with patch("deposits.viewsets.DepositAddress.get_address") as get_address_mock:
+            response = DepositViewSet.as_view({"get": "address"})(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
+        get_address_mock.assert_not_called()
+
     def test_address_endpoint_uses_capability_service_to_reject_tron_usdt(
         self,
     ):

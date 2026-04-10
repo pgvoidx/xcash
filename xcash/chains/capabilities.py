@@ -9,10 +9,8 @@ class ChainProductCapabilityService:
     INVOICE_RECIPIENT_CHAIN_TYPES = frozenset(
         {ChainType.EVM, ChainType.BITCOIN, ChainType.TRON}
     )
-    COLLECTION_RECIPIENT_CHAIN_TYPES = frozenset(
-        {ChainType.EVM, ChainType.BITCOIN}
-    )
-    DEPOSIT_CHAIN_TYPES = frozenset({ChainType.EVM, ChainType.BITCOIN})
+    COLLECTION_RECIPIENT_CHAIN_TYPES = frozenset({ChainType.EVM})
+    DEPOSIT_CHAIN_TYPES = frozenset({ChainType.EVM})
     WITHDRAWAL_CHAIN_TYPES = frozenset({ChainType.EVM})
 
     @classmethod

@@ -167,6 +167,7 @@ class ProjectAdminTests(TestCase):
         }
 
         self.assertNotIn(ChainType.TRON, choices)
+        self.assertNotIn(ChainType.BITCOIN, choices)
 
 
 class RecipientAddressCapabilityTests(TestCase):
@@ -191,6 +192,21 @@ class RecipientAddressCapabilityTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
+            used_for_invoice=False,
+            used_for_deposit=True,
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            recipient.clean()
+
+        self.assertIn("chain_type", ctx.exception.message_dict)
+
+    def test_clean_rejects_bitcoin_collection_address(self):
+        recipient = RecipientAddress(
+            name="Bitcoin Collection",
+            project=self.project,
+            chain_type=ChainType.BITCOIN,
+            address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
             used_for_invoice=False,
             used_for_deposit=True,
         )
