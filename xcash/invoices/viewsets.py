@@ -68,8 +68,11 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return [InvoiceSelectMethodThrottle()]
         return super().get_throttles()
 
-    @db_transaction.atomic
     def create(self, request, *args, **kwargs):
+        # 不使用 @db_transaction.atomic：让 Invoice INSERT 立即提交，
+        # 释放 Project 行上的 FOR KEY SHARE FK 锁，避免高并发下
+        # 多事务争夺同一 Project tuple 的 MultiXact 锁元数据导致死锁。
+        # IntegrityError（重复 out_no）在 autocommit 模式下仍可正常捕获。
         serializer = self.get_serializer(
             data=request.data, context={"request": request}
         )

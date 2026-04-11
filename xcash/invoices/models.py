@@ -281,8 +281,10 @@ class Invoice(models.Model):
            浮动范围极小（通常 < 0.001%），对买家感知影响可忽略。
         2. 先遍历金额再遍历地址（双层循环），保证同一账单产生的差额尽量小——
            优先在最小差额下轮换地址，地址不够时才升档。
-        3. 通过 SELECT FOR UPDATE 锁住当前项目在候选范围内的活跃槽位，
-           配合 InvoicePaySlot 的部分唯一约束（uniq_invoice_pay_slot_active）防并发冲突。
+        3. 并发安全由 InvoicePaySlot 的部分唯一约束（uniq_invoice_pay_slot_active）保证，
+           冲突时由 select_method() 的 IntegrityError 重试循环处理。
+           不使用 SELECT FOR UPDATE——悲观锁范围过广（101×N 行）会与 FK 约束检查
+           形成环形等待，导致死锁。
         4. 若 101 × N 个组合全部被占用，返回 (None, None) 表示分配失败。
         """
         now = timezone.now()
@@ -297,11 +299,11 @@ class Invoice(models.Model):
         if not addresses:
             return None, None
 
-        # 调用方已在事务中（select_method 的内层 savepoint），SELECT FOR UPDATE 的行锁
-        # 持续到外层事务结束。此处不需要额外 savepoint。
-        locked_existing = (
-            InvoicePaySlot.objects.select_for_update()
-            .filter(
+        # 乐观并发：普通 SELECT 读取已占用的槽位，不加行锁。
+        # 并发事务可能同时选中同一空隙，由 uniq_invoice_pay_slot_active 约束拦截，
+        # 外层 select_method() 捕获 IntegrityError 后重试即可。
+        existing = set(
+            InvoicePaySlot.objects.filter(
                 project=project,
                 crypto=crypto,
                 chain=chain,
@@ -309,10 +311,8 @@ class Invoice(models.Model):
                 pay_amount__in=amounts,
                 pay_address__in=addresses,
                 invoice__expires_at__gte=now,
-            )
-            .values_list("pay_address", "pay_amount")
+            ).values_list("pay_address", "pay_amount")
         )
-        existing = set(locked_existing)
 
         for amount in amounts:
             for address in addresses:
@@ -328,7 +328,7 @@ class Invoice(models.Model):
         return None
 
     def _next_pay_slot_version(self) -> int:
-        # 版本号只在当前账单内单调递增，用于稳定表达“支付指引被更新了多少次”。
+        # 版本号只在当前账单内单调递增，用于稳定表达"支付指引被更新了多少次"。
         latest_version = (
             self.pay_slots.order_by("-version")
             .values_list(
@@ -399,10 +399,14 @@ class Invoice(models.Model):
 
 
 class InvoicePaySlot(models.Model):
-    # project 冗余存储到槽位表，用于把“全项目活跃支付槽唯一”下沉到数据库约束层。
+    # project 冗余存储到槽位表，用于把"全项目活跃支付槽唯一"下沉到数据库约束层。
+    # db_constraint=False: 去掉 DB 层 FK 约束, 避免 INSERT 时的 FOR KEY SHARE
+    # 锁定 Project 行导致高并发死锁. 数据完整性由 select_method 的 Invoice->Project
+    # 引用链保证, PaySlot.project 始终等于 Invoice.project.
     project = models.ForeignKey(
         "projects.Project",
         on_delete=models.CASCADE,
+        db_constraint=False,
         editable=False,
         verbose_name=_("项目"),
     )

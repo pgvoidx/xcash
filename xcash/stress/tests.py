@@ -52,8 +52,8 @@ class StressServiceTests(SimpleTestCase):
         case = SimpleNamespace(sequence=7, stress_run=stress_run)
 
         response = Mock()
+        response.status_code = 200
         response.json.return_value = {"sys_no": "INV-1"}
-        response.raise_for_status.return_value = None
 
         with (
             patch(
@@ -138,11 +138,11 @@ class StressServiceTests(SimpleTestCase):
         case = SimpleNamespace(invoice_sys_no="INV-1", stress_run=stress_run)
 
         response = Mock()
+        response.status_code = 200
         response.json.return_value = {
             "crypto": "USDT",
             "chain": "ethereum-local",
         }
-        response.raise_for_status.return_value = None
 
         with (
             patch(

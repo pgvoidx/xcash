@@ -216,7 +216,7 @@ class StressService:
         project = stress_run.project
         methods = _require_stress_methods_ready(project)
 
-        amount = str(round(random.uniform(1, 100), 2))  # noqa: S311
+        amount = str(round(random.uniform(0.1, 10), 2))  # noqa: S311
         out_no = f"STRESS-{stress_run.pk}-{case.sequence}"
 
         body = json.dumps(
@@ -235,7 +235,9 @@ class StressService:
         url = f"{base_url}/v1/invoice"
 
         resp = httpx.post(url, content=body, headers=headers, timeout=10)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            detail = _extract_error_detail(resp)
+            raise RuntimeError(f"创建 Invoice API {resp.status_code}: {detail}")
         return resp.json()
 
     @staticmethod
@@ -261,7 +263,9 @@ class StressService:
             },
             timeout=10,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            detail = _extract_error_detail(resp)
+            raise RuntimeError(f"选择支付方式 API {resp.status_code}: {detail}")
         return resp.json()
 
     @staticmethod
@@ -378,6 +382,7 @@ def _setup_recipient_addresses(project: Project) -> None:
 
     try:
         from .bitcoin import BitcoinStressClient
+        from .bitcoin import _mine_blocks
 
         btc_client = BitcoinStressClient()
         btc_invoice_address = btc_client.get_new_address()
@@ -389,6 +394,11 @@ def _setup_recipient_addresses(project: Project) -> None:
             used_for_deposit=False,
         )
         # BTC 充币已砍掉，只保留 Invoice 收款地址。
+
+        # 预挖矿：确保 root wallet 有充足余额供后续 BTC 支付 case 使用，
+        # 避免并发 case 同时耗尽余额导致 Insufficient funds。
+        _mine_blocks(btc_client.root_wallet_client, count=110)
+        logger.info("stress.btc.pre_mined", blocks=110)
     except Exception as exc:
         logger.warning("stress.setup_btc_recipient_failed", exc_info=True)
         raise RuntimeError("创建 BTC 收款地址失败，Stress Project 未准备完成") from exc

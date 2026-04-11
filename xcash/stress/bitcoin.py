@@ -1,5 +1,6 @@
 # xcash/stress/bitcoin.py
 """Bitcoin 链上支付：直连 regtest 节点。"""
+import time
 from decimal import Decimal
 from urllib.parse import quote
 from urllib.parse import unquote
@@ -63,8 +64,23 @@ def _ensure_wallet_client(
     root_client: BitcoinRpcClient,
     root_rpc_url: str,
     wallet_name: str,
+    *,
+    max_retries: int = 10,
 ) -> BitcoinRpcClient:
-    loaded_wallets = set(root_client.list_wallets())
+    # list_wallets 在节点钱包尚未加载完成时会报 "Loading wallet..."，
+    # 需等待几秒后重试，而不是直接失败。
+    for attempt in range(max_retries):
+        try:
+            loaded_wallets = set(root_client.list_wallets())
+            break
+        except BitcoinRpcError as exc:
+            if "Loading wallet" in str(exc) and attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+            raise
+    else:
+        loaded_wallets = set()
+
     if wallet_name not in loaded_wallets:
         try:
             root_client.load_wallet(wallet_name)
@@ -118,15 +134,27 @@ def _fund_payer_wallet(
     root_wallet_client: BitcoinRpcClient,
     payer_address: str,
     funding_amount: Decimal,
+    *,
+    max_retries: int = 3,
 ) -> None:
-    try:
-        root_wallet_client.send_to_address(payer_address, funding_amount)
-    except BitcoinRpcError as exc:
-        if "Insufficient funds" not in str(exc):
-            raise
-        miner_address = _mine_blocks(root_wallet_client, count=101)
-        logger.info("stress.btc.mined_initial_blocks", miner=miner_address)
-        root_wallet_client.send_to_address(payer_address, funding_amount)
+    for attempt in range(max_retries):
+        try:
+            root_wallet_client.send_to_address(payer_address, funding_amount)
+            break
+        except BitcoinRpcError as exc:
+            if "Insufficient funds" not in str(exc):
+                raise
+            # 余额不足：挖矿补充后重试。多并发 case 同时耗尽 root wallet 时
+            # 可能需要多轮挖矿，因此循环重试而非只挖一次。
+            miner_address = _mine_blocks(root_wallet_client, count=110)
+            logger.info(
+                "stress.btc.mined_for_funding",
+                miner=miner_address,
+                attempt=attempt + 1,
+            )
+            if attempt == max_retries - 1:
+                # 最后一次重试仍失败则抛出
+                root_wallet_client.send_to_address(payer_address, funding_amount)
 
     _mine_blocks(root_wallet_client, count=1)
 

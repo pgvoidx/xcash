@@ -2,6 +2,7 @@
 import time
 from datetime import timedelta
 
+import httpx
 import structlog
 from celery import shared_task
 from django.db import models
@@ -41,7 +42,18 @@ def prepare_stress(stress_run_id: int) -> None:
         )
 
 
-@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180)
+# 瞬态连接错误：Django 服务未就绪、连接被重置等，可安全重试。
+_TRANSIENT_EXC = (ConnectionError, httpx.ConnectError, httpx.RemoteProtocolError)
+
+_RETRY_KWARGS = dict(
+    autoretry_for=_TRANSIENT_EXC,
+    retry_backoff=3,
+    retry_backoff_max=30,
+    max_retries=5,
+)
+
+
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
 def execute_stress_case(case_id: int) -> None:
     """执行单个 InvoiceStressCase 的完整流程。"""
     try:
@@ -123,7 +135,7 @@ def _do_payment(case: InvoiceStressCase) -> dict[str, str]:
     )
 
 
-@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180)
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
 def execute_withdrawal_case(case_id: int) -> None:
     """执行单个 WithdrawalStressCase 的完整流程。"""
     try:
@@ -294,7 +306,7 @@ def check_webhook_timeout(case_id: int) -> None:
 # ── 充币压测 ──────────────────────────────────────────────────
 
 
-@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180)
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
 def execute_deposit_case(case_id: int) -> None:
     """执行单个 DepositStressCase 的完整流程：获取地址 → 模拟充值 → 等待 webhook。"""
     try:
