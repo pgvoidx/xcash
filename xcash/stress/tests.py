@@ -570,7 +570,6 @@ class StressServiceTests(SimpleTestCase):
         send_btc_mock.assert_called_once_with(
             to="bcrt1target",
             amount=Decimal("0.01"),
-            wallet_name="stress-case-1",
         )
 
     def test_simulate_payment_dispatches_to_evm_native_sender(self):

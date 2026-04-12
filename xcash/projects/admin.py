@@ -19,6 +19,7 @@ from chains.adapters import AdapterFactory
 from chains.capabilities import ChainProductCapabilityService
 from chains.models import Address
 from chains.models import AddressUsage
+from chains.models import Chain
 from chains.models import ChainType
 from common.admin import ModelAdmin
 from projects.models import Project

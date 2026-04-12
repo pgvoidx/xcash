@@ -149,7 +149,7 @@ class WithdrawalBroadcastTaskTests(TestCase):
             status=TransferStatus.CONFIRMING,
         )
 
-        matched = WithdrawalService.try_match_withdrawal(transfer)
+        matched = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
 
         withdrawal.refresh_from_db()
         transfer.refresh_from_db()
@@ -1922,8 +1922,9 @@ class WithdrawalTryMatchTests(TestCase):
 
     def test_match_returns_false_when_no_withdrawal_found(self):
         """链上转账没有对应提币单时应返回 False。"""
+        broadcast_task = self._make_broadcast_task(tx_hash=self._next_hash())
         transfer = self._make_transfer(event_id="native:no-match")
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
         self.assertFalse(result)
 
     def test_match_returns_false_when_chain_mismatch(self):
@@ -1946,7 +1947,7 @@ class WithdrawalTryMatchTests(TestCase):
             chain=self.other_chain, tx_hash=tx_hash, event_id="native:mismatch"
         )
 
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
         self.assertFalse(result)
 
     def test_match_returns_false_when_not_pending(self):
@@ -1969,7 +1970,7 @@ class WithdrawalTryMatchTests(TestCase):
             transfer=transfer,
         )
 
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
         self.assertFalse(result)
 
     @patch("chains.tasks.process_transfer.apply_async")
@@ -1990,7 +1991,7 @@ class WithdrawalTryMatchTests(TestCase):
         )
         transfer = self._make_transfer(tx_hash=tx_hash, event_id="native:success")
 
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
         self.assertTrue(result)
 
         withdrawal = Withdrawal.objects.get(out_no="match-success")
@@ -2021,7 +2022,7 @@ class WithdrawalTryMatchTests(TestCase):
         )
         transfer = self._make_transfer(tx_hash=tx_hash, event_id="native:backfill")
 
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
         self.assertTrue(result)
 
         withdrawal = Withdrawal.objects.get(out_no="match-backfill-chain")
@@ -2046,7 +2047,7 @@ class WithdrawalTryMatchTests(TestCase):
         )
         transfer = self._make_transfer(tx_hash=old_hash, event_id="native:old-hash")
 
-        result = WithdrawalService.try_match_withdrawal(transfer)
+        result = WithdrawalService.try_match_withdrawal(transfer, broadcast_task)
 
         self.assertTrue(result)
         withdrawal = Withdrawal.objects.get(out_no="match-old-hash")
