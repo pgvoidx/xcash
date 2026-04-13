@@ -12,7 +12,10 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
   # dependencies for building Python packages \
   build-essential \
   # psycopg dependencies \
-  libpq-dev
+  libpq-dev \
+  # coincurve (secp256k1 bindings) build dependencies \
+  pkg-config \
+  libsecp256k1-dev
 
 # Requirements are installed here to ensure they will be cached.
 RUN --mount=type=cache,target=/root/.cache/uv \
