@@ -172,7 +172,7 @@ def status(request):
 
 
 class RecipientAddress(models.Model):
-    name = models.CharField(verbose_name=_("名称"))
+    name = models.CharField(verbose_name=_("名称"), blank=True)
     project = models.ForeignKey(
         "projects.Project",
         on_delete=models.CASCADE,
