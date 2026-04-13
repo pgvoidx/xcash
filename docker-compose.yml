@@ -1,9 +1,9 @@
 name: xcash
 
 volumes:
-  xcash_redis_data: {}
-  xcash_django_db_data: {}
-  xcash_signer_db_data: {}
+  redis_data: {}
+  django_db_data: {}
+  signer_db_data: {}
 
 services:
   redis:
@@ -11,7 +11,7 @@ services:
     container_name: xcash_redis
     restart: unless-stopped
     volumes:
-      - xcash_redis_data:/data
+      - redis_data:/data
 
   django-db:
     image: postgres:18.3-trixie
@@ -22,7 +22,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - xcash_django_db_data:/var/lib/postgresql
+      - django_db_data:/var/lib/postgresql
 
   signer-db:
     image: postgres:18.3-trixie
@@ -33,7 +33,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${SIGNER_POSTGRES_PASSWORD}
     volumes:
-      - xcash_signer_db_data:/var/lib/postgresql
+      - signer_db_data:/var/lib/postgresql
 
   signer:
     build:
