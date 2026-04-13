@@ -50,7 +50,8 @@ RUN set -eux; \
 
 COPY --from=python-build-stage --chown=django:django ${APP_HOME} ${APP_HOME}
 
-ENV PATH="/app/signer/.venv/bin:$PATH"
+ENV PATH="/app/signer/.venv/bin:$PATH" \
+    DJANGO_SETTINGS_MODULE=config.settings
 
 USER django
 

@@ -54,7 +54,7 @@ DATABASES = {
         # 本地直接运行 signer 管理命令时优先复用现有 PostgreSQL 主机环境，避免默认容器主机名无法解析。
         "HOST": env.str(
             "SIGNER_POSTGRES_HOST",
-            default=env.str("POSTGRES_HOST", default="127.0.0.1"),
+            default=env.str("POSTGRES_HOST", default="signer-db"),
         ),
         "PORT": env.int("SIGNER_POSTGRES_PORT", default=5432),
     }
@@ -64,7 +64,7 @@ DATABASES["default"]["CONN_MAX_AGE"] = env.int("SIGNER_CONN_MAX_AGE", default=60
 
 REDIS_HOST = env.str(
     "SIGNER_REDIS_HOST",
-    default=env.str("REDIS_HOST", default="127.0.0.1"),
+    default=env.str("REDIS_HOST", default="redis"),
 )
 REDIS_PORT = env.int("SIGNER_REDIS_PORT", default=env.int("REDIS_PORT", default=6379))
 REDIS_DB = env.int("SIGNER_REDIS_DB", default=env.int("REDIS_DB", default=1))

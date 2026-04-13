@@ -77,7 +77,8 @@ COPY --from=python-build-stage --chown=django:django ${APP_HOME} ${APP_HOME}
 COPY --from=frontend-build-stage --chown=django:django /frontend/dist /app/pay-fronted/dist
 
 # Place executables in the environment at the front of the path
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH" \
+    DJANGO_SETTINGS_MODULE=config.settings.production
 
 RUN chmod +x ./compose/production/django/build-assets.sh && \
     ./compose/production/django/build-assets.sh

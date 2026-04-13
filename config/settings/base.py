@@ -54,7 +54,7 @@ DEFAULT_SUPERUSER_PASSWORD = env.str(
 # ------------------------------------------------------------------------------
 # 主应用默认通过独立 signer 服务完成地址派生和签名；local 仅保留给显式开发场景。
 SIGNER_BACKEND = env.str("SIGNER_BACKEND", default="remote")
-SIGNER_BASE_URL = env.str("SIGNER_BASE_URL", default="")
+SIGNER_BASE_URL = env.str("SIGNER_BASE_URL", default="http://signer:8000")
 SIGNER_TIMEOUT = env.float("SIGNER_TIMEOUT", default=8.0)
 SIGNER_SHARED_SECRET = env.str("SIGNER_SHARED_SECRET", default="")
 SIGNER_REQUEST_TTL = env.int("SIGNER_REQUEST_TTL", default=300)
@@ -114,7 +114,7 @@ else:
         "NAME": "xcash",
         "USER": "postgres",
         "PASSWORD": env.str("POSTGRES_PASSWORD"),
-        "HOST": env.str("POSTGRES_HOST"),
+        "HOST": env.str("POSTGRES_HOST", default="django-db"),
         "PORT": env.int("POSTGRES_PORT", default=5432),
     }
 
