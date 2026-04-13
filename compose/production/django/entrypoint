@@ -4,7 +4,7 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-wait-for-it "${POSTGRES_HOST}:5432" -t 30
+wait-for-it "${POSTGRES_HOST:-django-db}:${POSTGRES_PORT:-5432}" -t 30
 >&2 echo 'PostgreSQL is available'
 
 wait-for-it "${REDIS_HOST:-redis}:${REDIS_PORT:-6379}" -t 30
