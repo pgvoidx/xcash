@@ -90,7 +90,7 @@ def _ensure_wallet_client(
                 "Wallet file not found" in error_message
                 or "Path does not exist" in error_message
             ):
-                root_client.create_wallet(wallet_name)
+                root_client.create_wallet(wallet_name, load_on_startup=False)
             else:
                 raise
 

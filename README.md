@@ -91,13 +91,13 @@ git clone https://github.com/xcash-team/xcash.git
 cd xcash
 ```
 
-### 2. 初始化环境
+### 2. 初始化环境变量
 
 ```bash
 ./scripts/init_env.sh
 ```
 
-自动生成 `.env` 文件并填充所有必需的密钥（Django Secret、数据库密码、Signer 密钥等）。
+自动生成 `.env` 文件并填充所有必需的密钥（Django Secret、数据库密码、Signer 密钥等）。   
 请妥善保存并保密此 `.env` 文件，如若丢失将失去系统内资产。
 
 ### 3. 设置访问方式

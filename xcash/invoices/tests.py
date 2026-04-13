@@ -742,6 +742,7 @@ class InvoiceWebhookPayloadTests(TestCase):
         self.assertIsNone(payload["data"]["chain"])
         self.assertIsNone(payload["data"]["hash"])
         self.assertIsNone(payload["data"]["block"])
+        self.assertFalse(payload["data"]["confirmed"])
         self.assertNotIn("tx", payload)
 
 

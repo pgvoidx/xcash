@@ -120,6 +120,7 @@ class InvoiceService:
                 ),
                 "hash": invoice.transfer.hash if invoice.transfer_id else None,
                 "block": invoice.transfer.block if invoice.transfer_id else None,
+                "confirmed": invoice.status == InvoiceStatus.COMPLETED,
             },
         }
 

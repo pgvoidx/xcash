@@ -937,6 +937,7 @@ class StressWebhookTests(TestCase):
                 "pay_amount": "1.23",
                 "hash": "0xa04a8394076c7f7ad4a974fc462ba2a0e08e83c820f99bbe1ea7c8f3da6e7f52",
                 "block": 1,
+                "confirmed": True,
             },
         }
         body = json.dumps(payload)

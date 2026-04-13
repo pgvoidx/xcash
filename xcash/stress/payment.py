@@ -30,12 +30,7 @@ def simulate_payment(
     crypto_obj = Crypto.objects.get(symbol=crypto_symbol)
 
     if chain_obj.type == ChainType.BITCOIN:
-        wallet_name = f"stress-{payment_ref}" if payment_ref else "stress-btc-payer"
-        return send_btc(
-            to=to_address,
-            amount=amount,
-            wallet_name=wallet_name,
-        )
+        return send_btc(to=to_address, amount=amount)
 
     if chain_obj.type != ChainType.EVM:
         raise ValueError(f"不支持的链类型: {chain_obj.type}")
