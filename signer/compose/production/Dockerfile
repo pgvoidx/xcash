@@ -9,6 +9,8 @@ WORKDIR ${APP_HOME}
 RUN apt-get update && apt-get install --no-install-recommends -y \
   build-essential \
   libpq-dev \
+  pkg-config \
+  libsecp256k1-dev \
   && rm -rf /var/lib/apt/lists/*
 
 # signer 生产镜像只解析 signer 依赖，避免把主应用的后台与任务依赖带进来。
