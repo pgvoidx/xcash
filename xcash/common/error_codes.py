@@ -65,6 +65,11 @@ class ErrorCode(Enum):
     INVOICE_NOT_EXIST = ErrorInfo("5011", _("账单不存在"), 400)
     INVOICE_EXPIRED = ErrorInfo("5012", _("账单已过期"), 400)
 
+    # Internal API
+    INVALID_INTERNAL_TOKEN = ErrorInfo("6000", _("内部API令牌无效"), 401)
+    WITHDRAWAL_NOT_REVIEWABLE = ErrorInfo("6001", _("提币单非审核中状态"), 400)
+    PROJECT_NOT_FOUND = ErrorInfo("6002", _("项目不存在"), 404)
+
     def __init__(self, info: ErrorInfo):
         self._info = info
 
