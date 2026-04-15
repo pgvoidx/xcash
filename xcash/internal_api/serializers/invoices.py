@@ -41,7 +41,7 @@ class InternalInvoiceCreateSerializer(serializers.ModelSerializer):
 
 
 class InternalInvoiceDetailSerializer(serializers.ModelSerializer):
-    payment = TransferSerializer(source="transfer", read_only=True)
+    tx = TransferSerializer(source="transfer", read_only=True)
     crypto = serializers.SlugRelatedField(slug_field="symbol", read_only=True)
     chain = serializers.SlugRelatedField(slug_field="code", read_only=True)
 
@@ -61,7 +61,7 @@ class InternalInvoiceDetailSerializer(serializers.ModelSerializer):
             "pay_address",
             "worth",
             "status",
-            "payment",
+            "tx",
             "started_at",
             "expires_at",
             "redirect_url",

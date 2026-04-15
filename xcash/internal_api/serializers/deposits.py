@@ -5,7 +5,7 @@ from deposits.models import Deposit
 
 
 class InternalDepositDetailSerializer(serializers.ModelSerializer):
-    payment = TransferSerializer(source="transfer", read_only=True)
+    tx = TransferSerializer(source="transfer", read_only=True)
     uid = serializers.CharField(source="customer.uid", read_only=True)
     crypto = serializers.SlugRelatedField(
         source="transfer.crypto", slug_field="symbol", read_only=True
@@ -23,7 +23,7 @@ class InternalDepositDetailSerializer(serializers.ModelSerializer):
             "chain",
             "worth",
             "status",
-            "payment",
+            "tx",
             "created_at",
             "updated_at",
         ]
