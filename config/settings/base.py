@@ -30,6 +30,10 @@ REDIS_URL = env.str(
     "REDIS_URL", default=f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 )
 
+# Internal API
+# ------------------------------------------------------------------------------
+INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
+
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
 # CORS 默认关闭，由各环境配置显式开启或配置白名单。
 CORS_ALLOW_ALL_ORIGINS = False
@@ -171,6 +175,7 @@ LOCAL_APPS = [
     "bitcoin",
     # Tron 监听、扫描游标与 provider 接入
     "tron",
+    "internal_api",
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
