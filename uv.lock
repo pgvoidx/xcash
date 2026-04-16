@@ -795,18 +795,6 @@ wheels = [
 ]
 
 [[package]]
-name = "django-simple-history"
-version = "3.11.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "django" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/11/410049f1454b99a78f719d3403fc89437c2a38ee092e939d5ab8d4846738/django_simple_history-3.11.0.tar.gz", hash = "sha256:2c587479cf2c3071e9aa555d0d11b73676994db4910770958f57659ade2deffe", size = 234862, upload-time = "2025-12-11T13:50:55.022Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/c2/e9854a3438cfc80891ab4d3826b7c61a0fe5ba3a4da89104a8f5c9afb5df/django_simple_history-3.11.0-py3-none-any.whl", hash = "sha256:f3c298db49e418ffce7fb709a5e83108452ea2179ec5c4b9232484c25427192a", size = 81868, upload-time = "2025-12-11T13:50:53.71Z" },
-]
-
-[[package]]
 name = "django-smart-ratelimit"
 version = "2.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2720,7 +2708,6 @@ dependencies = [
     { name = "django-otp" },
     { name = "django-redis" },
     { name = "django-sequences" },
-    { name = "django-simple-history" },
     { name = "django-smart-ratelimit", extra = ["redis"] },
     { name = "django-unfold" },
     { name = "djangorestframework" },
@@ -2785,7 +2772,6 @@ requires-dist = [
     { name = "django-otp", specifier = ">=1.7.0" },
     { name = "django-redis", specifier = "==6.0.0" },
     { name = "django-sequences", specifier = "==3.0" },
-    { name = "django-simple-history", specifier = "==3.11.0" },
     { name = "django-smart-ratelimit", extras = ["redis"], specifier = "==2.2.0" },
     { name = "django-unfold", specifier = "==0.89.0" },
     { name = "djangorestframework", specifier = "==3.17.1" },

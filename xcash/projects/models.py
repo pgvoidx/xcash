@@ -5,7 +5,6 @@ from django.db import models
 from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
 from shortuuid.django_fields import ShortUUIDField
-from simple_history.models import HistoricalRecords
 
 from chains.capabilities import ChainProductCapabilityService
 from chains.models import Chain
@@ -120,7 +119,6 @@ class Project(models.Model):
     )
 
     active = models.BooleanField(verbose_name=_("启用"), default=True)
-    history = HistoricalRecords()
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("创建时间"))
 
     class Meta:
@@ -189,7 +187,6 @@ class RecipientAddress(models.Model):
         choices=RecipientAddressUsage,
         max_length=32,
     )
-    history = HistoricalRecords()
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("创建时间"))
 
     class Meta:

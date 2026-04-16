@@ -16,42 +16,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AddField(
-            model_name="historicalplatformsettings",
-            name="created_by",
-            field=models.ForeignKey(
-                blank=True,
-                db_constraint=False,
-                null=True,
-                on_delete=django.db.models.deletion.DO_NOTHING,
-                related_name="+",
-                to=settings.AUTH_USER_MODEL,
-                verbose_name="创建人",
-            ),
-        ),
-        migrations.AddField(
-            model_name="historicalplatformsettings",
-            name="history_user",
-            field=models.ForeignKey(
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="+",
-                to=settings.AUTH_USER_MODEL,
-            ),
-        ),
-        migrations.AddField(
-            model_name="historicalplatformsettings",
-            name="updated_by",
-            field=models.ForeignKey(
-                blank=True,
-                db_constraint=False,
-                null=True,
-                on_delete=django.db.models.deletion.DO_NOTHING,
-                related_name="+",
-                to=settings.AUTH_USER_MODEL,
-                verbose_name="更新人",
-            ),
-        ),
-        migrations.AddField(
             model_name="platformsettings",
             name="created_by",
             field=models.ForeignKey(

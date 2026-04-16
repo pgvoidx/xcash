@@ -4,7 +4,6 @@ from django.core.cache import cache
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
-from simple_history.models import HistoricalRecords
 
 PLATFORM_SETTINGS_CACHE_KEY = "core:platform_settings:singleton"
 
@@ -108,8 +107,6 @@ class PlatformSettings(models.Model):
     )
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
     updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
-    history = HistoricalRecords()
-
     class Meta:
         verbose_name = _("平台运行参数")
         verbose_name_plural = verbose_name

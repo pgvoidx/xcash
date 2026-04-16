@@ -12,11 +12,11 @@ from django.test.client import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 from django_otp.plugins.otp_totp.models import TOTPDevice
-from simple_history.admin import SimpleHistoryAdmin
 
 from chains.models import Chain
 from chains.models import ChainType
 from chains.test_signer import build_test_remote_signer_backend
+from common.admin import ModelAdmin
 from currencies.models import Crypto
 from projects.admin import CollectionAddressInline
 from projects.admin import PaymentAddressInline
@@ -130,7 +130,7 @@ class ProjectAdminTests(TestCase):
 
         with (
             patch.object(
-                SimpleHistoryAdmin,
+                ModelAdmin,
                 "save_model",
                 autospec=True,
             ) as save_model_mock,

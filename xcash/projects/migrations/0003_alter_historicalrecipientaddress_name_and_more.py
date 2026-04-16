@@ -11,11 +11,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AlterField(
-            model_name="historicalrecipientaddress",
-            name="name",
-            field=models.CharField(blank=True, verbose_name="名称"),
-        ),
-        migrations.AlterField(
             model_name="recipientaddress",
             name="name",
             field=models.CharField(blank=True, verbose_name="名称"),

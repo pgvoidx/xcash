@@ -8,7 +8,6 @@ from django.forms.formsets import all_valid
 from django.utils.html import format_html
 from django.utils.html import format_html_join
 from django.utils.translation import gettext_lazy as _
-from simple_history.admin import SimpleHistoryAdmin
 from unfold.admin import TabularInline
 from unfold.decorators import display
 from unfold.widgets import UnfoldAdminTextInputWidget
@@ -204,10 +203,7 @@ class CollectionAddressInline(_RecipientAddressInline):
 
 
 @admin.register(Project)
-class ProjectAdmin(
-    SimpleHistoryAdmin,
-    ModelAdmin,
-):
+class ProjectAdmin(ModelAdmin):
     change_form_outer_after_template = "admin/includes/project_change_otp_modal.html"
     SENSITIVE_PROJECT_FIELDS = frozenset(
         {

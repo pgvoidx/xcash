@@ -17,55 +17,10 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AddField(
-            model_name="historicalproject",
-            name="history_user",
-            field=models.ForeignKey(
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="+",
-                to=settings.AUTH_USER_MODEL,
-            ),
-        ),
-        migrations.AddField(
-            model_name="historicalproject",
-            name="wallet",
-            field=models.ForeignKey(
-                blank=True,
-                db_constraint=False,
-                null=True,
-                on_delete=django.db.models.deletion.DO_NOTHING,
-                related_name="+",
-                to="chains.wallet",
-            ),
-        ),
-        migrations.AddField(
-            model_name="historicalrecipientaddress",
-            name="history_user",
-            field=models.ForeignKey(
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="+",
-                to=settings.AUTH_USER_MODEL,
-            ),
-        ),
-        migrations.AddField(
             model_name="project",
             name="wallet",
             field=models.OneToOneField(
                 on_delete=django.db.models.deletion.CASCADE, to="chains.wallet"
-            ),
-        ),
-        migrations.AddField(
-            model_name="historicalrecipientaddress",
-            name="project",
-            field=models.ForeignKey(
-                blank=True,
-                db_constraint=False,
-                null=True,
-                on_delete=django.db.models.deletion.DO_NOTHING,
-                related_name="+",
-                to="projects.project",
-                verbose_name="项目",
             ),
         ),
         migrations.AddField(

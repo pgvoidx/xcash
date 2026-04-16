@@ -3,7 +3,6 @@ from django.core.exceptions import PermissionDenied
 from django.shortcuts import redirect
 from django.urls import reverse
 from django_celery_results.models import TaskResult
-from simple_history.admin import SimpleHistoryAdmin
 from unfold.admin import ModelAdmin
 
 from core.models import PlatformSettings
@@ -18,7 +17,7 @@ class TaskResultAdmin(ModelAdmin):
 
 
 @admin.register(PlatformSettings)
-class PlatformSettingsAdmin(SimpleHistoryAdmin, ModelAdmin):
+class PlatformSettingsAdmin(ModelAdmin):
     fieldsets = (
         (
             "后台安全",

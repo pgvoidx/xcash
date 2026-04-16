@@ -137,7 +137,6 @@ DJANGO_APPS = [
     "unfold.contrib.filters",
     "unfold.contrib.forms",
     "unfold.contrib.inlines",
-    "unfold.contrib.simple_history",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -154,7 +153,6 @@ THIRD_PARTY_APPS = [
     "corsheaders",
     "django_extensions",
     "sequences",
-    "simple_history",
 ]
 
 LOCAL_APPS = [
@@ -239,7 +237,6 @@ MIDDLEWARE = [
     # Admin 资金后台必须完成 OTP 验证后才能进入，避免仅凭密码拿到后台会话。
     "users.middleware.AdminOTPRequiredMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "simple_history.middleware.HistoryRequestMiddleware",
     "common.middlewares.ExceptionMiddleware",
     "common.middlewares.ProjectConfigMiddleware",
     "common.middlewares.IPWhiteListMiddleware",
