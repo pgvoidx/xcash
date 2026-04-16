@@ -100,9 +100,7 @@ cd xcash
 自动生成 `.env` 文件并填充所有必需的密钥（Django Secret、数据库密码、Signer 密钥等）。   
 请妥善保存并保密此 `.env` 文件，如若丢失将失去系统内资产。
 
-### 3. 设置访问方式（二选一）
-
-#### 方式 A：域名访问（公网部署）
+### 3. 设置访问域名
 
 编辑 `.env` 设置 `SITE_DOMAIN` 为你的域名：
 
@@ -110,16 +108,7 @@ cd xcash
 SITE_DOMAIN=xcash.example.com
 ```
 
-请确保该域名的 DNS 已解析到你的服务器 IP，并配置好反向代理（如 Nginx/Caddy）将流量转发至 `http://localhost:6688`，由反向代理处理 HTTPS 证书。启动后通过 `https://你的域名` 访问。
-
-#### 方式 B：IP 访问（内网部署）
-
-如果需要局域网内其他机器访问，设置为内网 IP，并开放 Traefik 监听地址：
-
-```env
-SITE_DOMAIN=10.0.0.5
-LISTEN_TO=0.0.0.0
-```
+请确保该域名的 DNS 已解析到你的服务器 IP，并配置好反向代理（如 Nginx/Caddy）将流量转发至 `http://localhost:6688`，由反向代理处理 HTTPS 证书。启动后通过 `https://你的域名` 访问。内网部署同样建议配置内部域名。
 
 ### 4. 启动服务
 
