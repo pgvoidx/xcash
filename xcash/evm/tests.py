@@ -83,11 +83,44 @@ class EvmScanCursorAdminTests(TestCase):
         self.admin = EvmScanCursorAdmin(EvmScanCursor, AdminSite())
         self.admin.message_user = Mock()
 
+    def test_enable_selected_scanners_updates_only_selected_cursors(self):
+        EvmScanCursor.objects.filter(
+            pk__in=[self.native_cursor.pk, self.erc20_cursor.pk]
+        ).update(enabled=False)
+
+        self.admin.enable_selected_scanners(
+            request=Mock(),
+            queryset=EvmScanCursor.objects.filter(pk=self.native_cursor.pk),
+        )
+
+        self.native_cursor.refresh_from_db()
+        self.erc20_cursor.refresh_from_db()
+
+        self.assertTrue(self.native_cursor.enabled)
+        self.assertFalse(self.erc20_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
+    def test_disable_selected_scanners_updates_only_selected_cursors(self):
+        self.admin.disable_selected_scanners(
+            request=Mock(),
+            queryset=EvmScanCursor.objects.filter(pk=self.native_cursor.pk),
+        )
+
+        self.native_cursor.refresh_from_db()
+        self.erc20_cursor.refresh_from_db()
+
+        self.assertFalse(self.native_cursor.enabled)
+        self.assertTrue(self.erc20_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
     @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
     def test_sync_selected_to_latest_updates_only_selected_cursors(
         self, get_latest_block_number_mock
     ):
-        get_latest_block_number_mock.return_value = 120
+        get_latest_block_number_mock.side_effect = AssertionError(
+            "should not fetch realtime block height"
+        )
+        Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=120)
 
         self.admin.sync_selected_to_latest(
             request=Mock(),
@@ -105,26 +138,7 @@ class EvmScanCursorAdminTests(TestCase):
         self.assertEqual(self.erc20_cursor.last_scanned_block, 12)
         self.assertEqual(self.chain.latest_block_number, 120)
         self.admin.message_user.assert_called_once()
-        self.assertEqual(get_latest_block_number_mock.call_count, 1)
-
-    @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
-    def test_sync_selected_to_latest_reports_rpc_error_without_mutation(
-        self, get_latest_block_number_mock
-    ):
-        get_latest_block_number_mock.side_effect = RuntimeError("rpc timeout")
-
-        self.admin.sync_selected_to_latest(
-            request=Mock(),
-            queryset=EvmScanCursor.objects.filter(pk=self.native_cursor.pk),
-        )
-
-        self.native_cursor.refresh_from_db()
-        self.chain.refresh_from_db()
-
-        self.assertEqual(self.native_cursor.last_scanned_block, 11)
-        self.assertEqual(self.chain.latest_block_number, 88)
-        self.admin.message_user.assert_called_once()
-        self.assertIn("rpc timeout", self.admin.message_user.call_args.args[1])
+        self.assertEqual(get_latest_block_number_mock.call_count, 0)
 
 
 class EvmScannerDefaultsTests(TestCase):

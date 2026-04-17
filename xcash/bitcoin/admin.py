@@ -9,7 +9,11 @@ from common.admin_scan_cursor import SyncScanCursorToLatestActionMixin
 @admin.register(BitcoinScanCursor)
 class BitcoinScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
     # Bitcoin 扫描游标只承担观测与排障职责，后台统一只读，避免人工改游标破坏扫描连续性。
-    actions = ("sync_selected_to_latest",)
+    actions = (
+        "enable_selected_scanners",
+        "disable_selected_scanners",
+        "sync_selected_to_latest",
+    )
     ordering = ("chain__name",)
     list_display = (
         "display_chain",

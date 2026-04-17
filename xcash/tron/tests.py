@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import Mock
+from unittest.mock import PropertyMock
 from unittest.mock import patch
 
 import httpx
+from django.contrib.admin.sites import AdminSite
 from django.db import IntegrityError
 from django.test import SimpleTestCase
 from django.test import TestCase
@@ -25,6 +28,7 @@ from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
+from tron.admin import TronWatchCursorAdmin
 from tron.client import TronHttpClient
 from tron.client import TronClientError
 from tron.codec import TronAddressCodec
@@ -155,6 +159,99 @@ class TronWatchCursorTests(TestCase):
                 chain=chain,
                 contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
             )
+
+
+class TronWatchCursorAdminTests(TestCase):
+    def setUp(self):
+        self.trx = Crypto.objects.create(
+            name="Tron Admin Test",
+            symbol="TRX-ADMIN",
+            coingecko_id="tron-admin-test",
+            decimals=6,
+        )
+        self.chain = Chain.objects.create(
+            name="Tron Admin Mainnet",
+            code="tron-admin-mainnet",
+            type=ChainType.TRON,
+            native_coin=self.trx,
+            rpc="https://api.trongrid.io",
+            active=True,
+            latest_block_number=66,
+        )
+        self.cursor = TronWatchCursor.objects.create(
+            chain=self.chain,
+            contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            last_scanned_block=11,
+            last_safe_block=11,
+            last_error="old error",
+            last_error_at=timezone.now(),
+        )
+        self.other_cursor = TronWatchCursor.objects.create(
+            chain=self.chain,
+            contract_address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
+            last_scanned_block=9,
+            last_safe_block=9,
+            enabled=False,
+        )
+        self.admin = TronWatchCursorAdmin(TronWatchCursor, AdminSite())
+        self.admin.message_user = Mock()
+
+    def test_enable_selected_scanners_updates_only_selected_cursors(self):
+        TronWatchCursor.objects.filter(pk=self.cursor.pk).update(enabled=False)
+
+        self.admin.enable_selected_scanners(
+            request=Mock(),
+            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        self.other_cursor.refresh_from_db()
+
+        self.assertTrue(self.cursor.enabled)
+        self.assertFalse(self.other_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
+    def test_disable_selected_scanners_updates_only_selected_cursors(self):
+        TronWatchCursor.objects.filter(pk=self.other_cursor.pk).update(enabled=True)
+
+        self.admin.disable_selected_scanners(
+            request=Mock(),
+            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        self.other_cursor.refresh_from_db()
+
+        self.assertFalse(self.cursor.enabled)
+        self.assertTrue(self.other_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
+    @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
+    def test_sync_selected_to_latest_uses_cached_chain_latest_block_number(
+        self, get_latest_block_number_mock
+    ):
+        get_latest_block_number_mock.side_effect = AssertionError(
+            "should not fetch realtime block height"
+        )
+        Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=77)
+
+        self.admin.sync_selected_to_latest(
+            request=Mock(),
+            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        self.other_cursor.refresh_from_db()
+        self.chain.refresh_from_db()
+
+        self.assertEqual(self.cursor.last_scanned_block, 77)
+        self.assertEqual(self.cursor.last_safe_block, 77)
+        self.assertEqual(self.cursor.last_error, "")
+        self.assertIsNone(self.cursor.last_error_at)
+        self.assertEqual(self.other_cursor.last_scanned_block, 9)
+        self.assertEqual(self.chain.latest_block_number, 77)
+        self.admin.message_user.assert_called_once()
+        self.assertEqual(get_latest_block_number_mock.call_count, 0)
 
 
 class TronUsdtPaymentScannerTests(TestCase):

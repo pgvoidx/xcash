@@ -8,7 +8,11 @@ from tron.models import TronWatchCursor
 
 @admin.register(TronWatchCursor)
 class TronWatchCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
-    actions = ("sync_selected_to_latest",)
+    actions = (
+        "enable_selected_scanners",
+        "disable_selected_scanners",
+        "sync_selected_to_latest",
+    )
     ordering = ("chain__name", "contract_address")
     list_display = (
         "display_chain",

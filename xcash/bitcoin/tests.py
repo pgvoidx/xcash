@@ -145,11 +145,75 @@ class BitcoinScanCursorAdminTests(TestCase):
         self.admin = BitcoinScanCursorAdmin(BitcoinScanCursor, AdminSite())
         self.admin.message_user = Mock()
 
+    def test_enable_selected_scanners_updates_only_selected_cursors(self):
+        other_chain = Chain.objects.create(
+            code="btc-admin-test-2",
+            name="Bitcoin Admin Test 2",
+            type=ChainType.BITCOIN,
+            rpc="http://bitcoin.local/2",
+            native_coin=self.native,
+            active=True,
+            confirm_block_count=2,
+            latest_block_number=18,
+        )
+        other_cursor = BitcoinScanCursor.objects.create(
+            chain=other_chain,
+            last_scanned_block=4,
+            last_safe_block=2,
+            enabled=False,
+        )
+        BitcoinScanCursor.objects.filter(pk=self.cursor.pk).update(enabled=False)
+
+        self.admin.enable_selected_scanners(
+            request=Mock(),
+            queryset=BitcoinScanCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        other_cursor.refresh_from_db()
+
+        self.assertTrue(self.cursor.enabled)
+        self.assertFalse(other_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
+    def test_disable_selected_scanners_updates_only_selected_cursors(self):
+        other_chain = Chain.objects.create(
+            code="btc-admin-test-3",
+            name="Bitcoin Admin Test 3",
+            type=ChainType.BITCOIN,
+            rpc="http://bitcoin.local/3",
+            native_coin=self.native,
+            active=True,
+            confirm_block_count=2,
+            latest_block_number=21,
+        )
+        other_cursor = BitcoinScanCursor.objects.create(
+            chain=other_chain,
+            last_scanned_block=5,
+            last_safe_block=3,
+            enabled=True,
+        )
+
+        self.admin.disable_selected_scanners(
+            request=Mock(),
+            queryset=BitcoinScanCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        other_cursor.refresh_from_db()
+
+        self.assertFalse(self.cursor.enabled)
+        self.assertTrue(other_cursor.enabled)
+        self.admin.message_user.assert_called_once()
+
     @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
     def test_sync_selected_to_latest_advances_cursor(
         self, get_latest_block_number_mock
     ):
-        get_latest_block_number_mock.return_value = 55
+        get_latest_block_number_mock.side_effect = AssertionError(
+            "should not fetch realtime block height"
+        )
+        Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=55)
 
         self.admin.sync_selected_to_latest(
             request=Mock(),
@@ -165,26 +229,7 @@ class BitcoinScanCursorAdminTests(TestCase):
         self.assertIsNone(self.cursor.last_error_at)
         self.assertEqual(self.chain.latest_block_number, 55)
         self.admin.message_user.assert_called_once()
-        self.assertEqual(get_latest_block_number_mock.call_count, 1)
-
-    @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
-    def test_sync_selected_to_latest_reports_rpc_error_without_mutation(
-        self, get_latest_block_number_mock
-    ):
-        get_latest_block_number_mock.side_effect = RuntimeError("bitcoin rpc timeout")
-
-        self.admin.sync_selected_to_latest(
-            request=Mock(),
-            queryset=BitcoinScanCursor.objects.filter(pk=self.cursor.pk),
-        )
-
-        self.cursor.refresh_from_db()
-        self.chain.refresh_from_db()
-
-        self.assertEqual(self.cursor.last_scanned_block, 9)
-        self.assertEqual(self.chain.latest_block_number, 40)
-        self.admin.message_user.assert_called_once()
-        self.assertIn("bitcoin rpc timeout", self.admin.message_user.call_args.args[1])
+        self.assertEqual(get_latest_block_number_mock.call_count, 0)
 
 
 class BitcoinScannerTests(TestCase):

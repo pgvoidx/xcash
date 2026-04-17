@@ -11,6 +11,38 @@ from django.utils import timezone
 class SyncScanCursorToLatestActionMixin:
     """为扫描游标后台提供“追平到最新区块”批量动作。"""
 
+    @admin.action(description="启用所选扫描游标")
+    def enable_selected_scanners(self, request, queryset) -> None:
+        selected_ids = list(queryset.values_list("pk", flat=True))
+        if not selected_ids:
+            self.message_user(request, "未选中任何扫描游标", level=messages.WARNING)
+            return
+
+        updated_count = queryset.model.objects.filter(pk__in=selected_ids).update(
+            enabled=True
+        )
+        self.message_user(
+            request,
+            f"已启用 {updated_count} 个扫描游标",
+            level=messages.SUCCESS,
+        )
+
+    @admin.action(description="暂停所选扫描游标")
+    def disable_selected_scanners(self, request, queryset) -> None:
+        selected_ids = list(queryset.values_list("pk", flat=True))
+        if not selected_ids:
+            self.message_user(request, "未选中任何扫描游标", level=messages.WARNING)
+            return
+
+        updated_count = queryset.model.objects.filter(pk__in=selected_ids).update(
+            enabled=False
+        )
+        self.message_user(
+            request,
+            f"已暂停 {updated_count} 个扫描游标",
+            level=messages.SUCCESS,
+        )
+
     @admin.action(description="追平到最新区块")
     def sync_selected_to_latest(self, request, queryset) -> None:
         selected_cursors = list(
@@ -31,21 +63,9 @@ class SyncScanCursorToLatestActionMixin:
 
         for chain_id, cursor_ids in cursor_ids_by_chain_id.items():
             chain = chains_by_id[chain_id]
-            try:
-                latest_block = chain.get_latest_block_number
-            except Exception as exc:  # noqa: BLE001
-                self.message_user(
-                    request,
-                    f"{chain.code} 追平失败：{exc}",
-                    level=messages.ERROR,
-                )
-                continue
-
+            latest_block = chain.latest_block_number
             safe_block = max(0, latest_block - chain.confirm_block_count)
             with transaction.atomic():
-                chain.__class__.objects.filter(pk=chain.pk).update(
-                    latest_block_number=latest_block,
-                )
                 queryset.model.objects.filter(pk__in=cursor_ids).update(
                     last_scanned_block=latest_block,
                     last_safe_block=safe_block,

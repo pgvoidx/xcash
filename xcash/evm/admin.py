@@ -88,7 +88,11 @@ class EvmBroadcastTaskAdmin(ReadOnlyModelAdmin):
 @admin.register(EvmScanCursor)
 class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
     # 自扫描游标只承担观测与排障职责；后台统一只读展示，避免人工改游标破坏扫描连续性。
-    actions = ("sync_selected_to_latest",)
+    actions = (
+        "enable_selected_scanners",
+        "disable_selected_scanners",
+        "sync_selected_to_latest",
+    )
     ordering = ("chain__name", "scanner_type")
     list_display = (
         "display_chain",
