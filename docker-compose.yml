@@ -66,6 +66,9 @@ services:
       - "traefik.http.routers.gateway.rule=Host(`${SITE_DOMAIN}`)"
       - "traefik.http.routers.gateway.entrypoints=web"
       - "traefik.http.routers.gateway.service=gateway"
+      - "traefik.http.routers.internal-api.rule=Path(`/internal/v1`) || PathPrefix(`/internal/v1/`)"
+      - "traefik.http.routers.internal-api.entrypoints=web"
+      - "traefik.http.routers.internal-api.service=gateway"
       - "traefik.http.services.gateway.loadbalancer.server.port=8000"
     command: /start
 

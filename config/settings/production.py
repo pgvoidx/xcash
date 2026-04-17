@@ -1,6 +1,8 @@
 # ruff: noqa: E501, F405
 import logging
 
+from common.host_access import normalize_ip_host
+
 from .base import *  # noqa
 from .base import env
 from .base import shared_processors
@@ -11,7 +13,10 @@ from .base import shared_processors
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DOMAIN = env("SITE_DOMAIN", default="localhost").strip().lower()
 SCHEME = "https"
+INTERNAL_API_ALLOWED_IP = normalize_ip_host(env.str("INTERNAL_API_IP", default=""))
 ALLOWED_HOSTS = ["127.0.0.1", "localhost", DOMAIN]
+if INTERNAL_API_ALLOWED_IP:
+    ALLOWED_HOSTS.append(INTERNAL_API_ALLOWED_IP)
 
 # STATIC & MEDIA
 # ------------------------
