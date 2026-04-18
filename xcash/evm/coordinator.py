@@ -286,4 +286,9 @@ class InternalEvmTaskCoordinator:
 
         if base_task.transfer_type == TransferType.Withdrawal:
             WithdrawalService.fail_withdrawal(broadcast_task=base_task)
+        elif base_task.transfer_type == TransferType.DepositCollection:
+            from deposits.service import DepositService
+
+            # 归集任务终态失败：解绑 deposits 让下一轮 gather_deposits 重新发起。
+            DepositService.release_failed_collection(broadcast_task=base_task)
         return True

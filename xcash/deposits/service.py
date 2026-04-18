@@ -172,10 +172,13 @@ class DepositService:
     @classmethod
     def prepare_collection(cls, deposit: Deposit) -> dict | None:  # noqa: PLR0911
         """
-        归集准备阶段（必须在事务内调用）：加锁、校验、计算金额，
-        为后续同事务创建 DepositCollection + BroadcastTask 准备参数。
+        归集准备阶段（事务外调用）：读取候选组、做链上 RPC 检查（余额、gas 价格、
+        gas 补充）、计算金额，返回 execute_collection 创建关系所需的参数。
 
-        返回 dict 包含归集任务创建所需参数，返回 None 表示无需归集。
+        本方法不加数据库锁，execute_collection 会在事务内对候选组再次加锁校验，
+        避免 prepare 与 execute 之间的状态漂移引起重复归集。
+
+        返回 dict 表示归集参数；返回 None 表示无需归集。
         """
         grouped_deposits, deposit = cls._resolve_collection_group(deposit)
         if deposit is None:
@@ -229,12 +232,20 @@ class DepositService:
     @db_transaction.atomic
     def execute_collection(cls, params: dict) -> bool:
         """
-        在同一事务内同时创建 BroadcastTask、DepositCollection 以及两者关系。
+        归集执行阶段（事务内调用）：加锁再校验 + 原子创建 BroadcastTask、
+        DepositCollection、并绑定 Deposit.collection 外键。
 
-        事务成功提交后，Deposit -> Collection 与 Collection -> BroadcastTask
-        两条关系同时成立；若任一步失败，则整个事务回滚，不留下半成品状态。
+        事务内只做本地 DB 操作（不做链上 RPC），保证短事务下的行锁持有时间。
+        若任一步失败，整个事务回滚，不留下半成品状态。
+        若加锁再校验时发现候选组已被并发处理或状态漂移，本轮放弃（返回 False），
+        由下一轮 gather_deposits 重新扫描发起。
         """
         from evm.models import EvmBroadcastTask
+
+        expected_ids = set(params["group_ids"])
+        locked_ids = cls._lock_pending_group_ids(params["group_ids"])
+        if locked_ids != expected_ids:
+            return False
 
         decimals = params["crypto"].get_decimals(params["chain"])
         value_raw = int(params["amount"] * Decimal(10**decimals))
@@ -258,16 +269,20 @@ class DepositService:
 
     @classmethod
     def collect_deposit(cls, deposit: Deposit) -> bool:
-        """归集便捷封装：在单个事务内完成 prepare + create，保证关系原子建立。"""
+        """归集便捷封装：事务外 prepare（含链上 RPC）+ 事务内 execute（DB 原子）。
+
+        拆分原则：链上 RPC（余额/gas/gas 补充）一律在事务外执行，避免
+        长事务持有行锁期间阻塞并发操作；execute 的短事务只做本地 DB
+        的加锁再校验 + 三步原子写入。
+        """
         try:
-            with db_transaction.atomic():
-                params = cls.prepare_collection(deposit)
-                if params is None:
-                    return False
-                return cls.execute_collection(params)
+            params = cls.prepare_collection(deposit)
+            if params is None:
+                return False
+            return cls.execute_collection(params)
         except Exception:  # noqa: BLE001
             logger.exception(
-                "归集任务创建失败，事务已回滚",
+                "归集任务创建失败",
                 deposit_id=getattr(deposit, "id", None) or getattr(deposit, "pk", None),
             )
             return False
@@ -284,7 +299,7 @@ class DepositService:
             logger.warning("_resolve_collection_group 收到未持久化实例，跳过")
             return [], None
 
-        grouped = cls._lock_collectible_group(deposit)
+        grouped = cls._snapshot_collectible_group(deposit)
         if not grouped:
             return [], None
         return grouped, grouped[0]
@@ -350,6 +365,10 @@ class DepositService:
     def drop_collection(collection: DepositCollection) -> None:
         """
         归集链上观测失效：保留固定关系，仅清空链上观测字段以等待同一任务重试/重播。
+
+        适用场景：Transfer.drop() 触发的 reorg 场景，此时同一 BroadcastTask
+        会被 reset_to_pending_chain 重新广播；只需清空链上观测字段即可由
+        try_match_collection 在新 transfer 上链后回写。
         """
         collection = DepositCollection.objects.select_for_update().get(pk=collection.pk)
         if (
@@ -364,6 +383,29 @@ class DepositService:
         collection.save(
             update_fields=["collection_hash", "transfer", "collected_at", "updated_at"]
         )
+
+    @staticmethod
+    @db_transaction.atomic
+    def release_failed_collection(*, broadcast_task) -> None:
+        """BroadcastTask 终态失败时调用：解绑 deposits + 删除 collection。
+
+        与 drop_collection（reorg 场景下保留关系）语义互补：当广播任务走到
+        FINALIZED+FAILED 终态、不再有重试机会时，必须把绑定的 deposits 释放
+        回 collection__isnull=True 状态，下一轮 gather_deposits 才能重新发起
+        归集，否则这些 deposit 会永久卡死在已失败的 collection 上。
+
+        显式先 update 再 delete，以刷新 deposits.updated_at（on_delete=SET_NULL
+        的级联清空不会更新 updated_at，会影响归集超时监控）。
+        """
+        collection = (
+            DepositCollection.objects.select_for_update()
+            .filter(broadcast_task=broadcast_task)
+            .first()
+        )
+        if collection is None:
+            return
+        collection.deposits.update(collection=None, updated_at=timezone.now())
+        collection.delete()
 
     @staticmethod
     def _select_recipient(*, project_id: int, chain_type: ChainType | str):
@@ -510,12 +552,30 @@ class DepositService:
             return 0
 
     @staticmethod
-    def _lock_collectible_group(deposit: Deposit) -> list[Deposit]:
-        """锁定同一客户在同链同币下仍待归集的全部完成充币记录。
-        使用 skip_locked 与 tasks.py 保持一致，避免并发时阻塞等待或死锁。"""
-        return list(
+    def _lock_pending_group_ids(group_ids: list[int]) -> set[int]:
+        """事务内对候选组加 select_for_update(skip_locked=True) 校验。
+
+        返回仍满足'待归集'条件（status=COMPLETED & collection__isnull=True）
+        的 deposit ID 集合，调用方必须在事务内调用。"""
+        return set(
             Deposit.objects.select_for_update(skip_locked=True)
-            .select_related(
+            .filter(
+                pk__in=group_ids,
+                status=DepositStatus.COMPLETED,
+                collection__isnull=True,
+            )
+            .values_list("pk", flat=True)
+        )
+
+    @staticmethod
+    def _snapshot_collectible_group(deposit: Deposit) -> list[Deposit]:
+        """读取同客户在同链同币下仍待归集的充币快照（不加锁）。
+
+        仅供事务外的 prepare_collection 使用；execute_collection 在事务内
+        会对候选组再加 select_for_update(skip_locked=True) 校验，确保
+        并发安全。"""
+        return list(
+            Deposit.objects.select_related(
                 "customer", "customer__project", "transfer__crypto", "transfer__chain"
             )
             .filter(

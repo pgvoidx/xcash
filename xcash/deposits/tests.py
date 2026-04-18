@@ -221,7 +221,7 @@ class DepositServiceCoreTests(TestCase):
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
-    @patch.object(DepositService, "_lock_collectible_group")
+    @patch.object(DepositService, "_snapshot_collectible_group")
     def test_collect_deposit_returns_false_when_no_recipient(
         self,
         lock_group_mock,
@@ -261,7 +261,7 @@ class DepositServiceCoreTests(TestCase):
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
-    @patch.object(DepositService, "_lock_collectible_group")
+    @patch.object(DepositService, "_snapshot_collectible_group")
     def test_collect_deposit_returns_false_when_zero_balance(
         self,
         lock_group_mock,
@@ -434,11 +434,12 @@ class DepositServiceDecimalsTests(TestCase):
         self.assertFalse(created)
         deposit_address_get_mock.assert_not_called()
 
+    @patch.object(DepositService, "_lock_pending_group_ids", return_value={1})
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)
-    @patch.object(DepositService, "_lock_collectible_group")
+    @patch.object(DepositService, "_snapshot_collectible_group")
     @patch("deposits.service.DepositCollection.objects")
     @patch("deposits.service.Deposit.objects.filter")
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
@@ -452,6 +453,7 @@ class DepositServiceDecimalsTests(TestCase):
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
+        _lock_ids_mock,
     ):
         # 覆盖精度场景下，归集发送金额必须按链特定精度换算，而不是 Crypto 默认精度。
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
@@ -461,7 +463,6 @@ class DepositServiceDecimalsTests(TestCase):
                 )
             )
         )
-        # mock 占位 collection 创建和 deposit 批量更新
         collection_objects_mock.create.return_value = SimpleNamespace(pk=999)
         deposit_filter_mock.return_value.update = Mock()
         collection_objects_mock.filter.return_value.update = Mock()
@@ -517,13 +518,14 @@ class DepositServiceDecimalsTests(TestCase):
             transfer_type=TransferType.DepositCollection,
         )
 
+    @patch.object(DepositService, "_lock_pending_group_ids", return_value={2})
     @patch("deposits.service.db_transaction.atomic", return_value=nullcontext())
     @patch("evm.models.EvmBroadcastTask.schedule_transfer", side_effect=RuntimeError("broadcast task create failed"))
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)
-    @patch.object(DepositService, "_lock_collectible_group")
+    @patch.object(DepositService, "_snapshot_collectible_group")
     @patch("deposits.service.DepositCollection.objects.create")
     @patch("deposits.service.Deposit.objects.filter")
     def test_collect_deposit_failure_keeps_relations_unbound_before_commit(
@@ -537,6 +539,7 @@ class DepositServiceDecimalsTests(TestCase):
         adapter_factory_mock,
         _schedule_transfer_mock,
         _atomic_mock,
+        _lock_ids_mock,
     ):
         # 创建 BroadcastTask 失败时，不应提前创建 collection 或绑定 deposit 关系。
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
@@ -1344,6 +1347,154 @@ class DepositTransferRematchTests(TestCase):
         self.assertIsNone(collection.transfer_id)
         self.assertIsNone(collection.collected_at)
         self.assertEqual(collection.broadcast_task_id, broadcast_task.pk)
+
+    def test_release_failed_collection_unbinds_deposits_and_deletes_collection(self):
+        # broadcast_task 终态失败时，release_failed_collection 必须解绑 deposits
+        # 并删除 collection，使这些 deposit 可被下一轮 gather_deposits 重新归集。
+        project = Project.objects.create(
+            name="DemoReleaseFailedCollection",
+            wallet=Wallet.objects.create(),
+        )
+        customer = Customer.objects.create(
+            project=project, uid="customer-release-failed"
+        )
+        native = Crypto.objects.create(
+            name="Ethereum Release Failed Native",
+            symbol="ETHRF",
+            coingecko_id="ethereum-release-failed-native",
+        )
+        crypto = Crypto.objects.create(
+            name="Tether Release Failed",
+            symbol="USDTRF",
+            coingecko_id="tether-release-failed",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Release Failed",
+            code="eth-release-failed",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=206,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        vault_addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000600",
+        )
+        broadcast_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault_addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient="0x0000000000000000000000000000000000000611",
+            amount=Decimal("3"),
+        )
+        transfer1 = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "f1" * 32,
+            event_id="erc20:f1",
+            crypto=crypto,
+            from_address="0x0000000000000000000000000000000000000601",
+            to_address="0x0000000000000000000000000000000000000611",
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        transfer2 = OnchainTransfer.objects.create(
+            chain=chain,
+            block=2,
+            hash="0x" + "f2" * 32,
+            event_id="erc20:f2",
+            crypto=crypto,
+            from_address="0x0000000000000000000000000000000000000602",
+            to_address="0x0000000000000000000000000000000000000611",
+            value="2",
+            amount=Decimal("2"),
+            timestamp=2,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        collection = DepositCollection.objects.create(
+            collection_hash=None,
+            broadcast_task=broadcast_task,
+        )
+        deposit1 = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer1,
+            status=DepositStatus.COMPLETED,
+            collection=collection,
+        )
+        deposit2 = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer2,
+            status=DepositStatus.COMPLETED,
+            collection=collection,
+        )
+        collection_id = collection.pk
+        before_updated_at = deposit1.updated_at
+
+        DepositService.release_failed_collection(broadcast_task=broadcast_task)
+
+        deposit1.refresh_from_db()
+        deposit2.refresh_from_db()
+        self.assertIsNone(deposit1.collection_id)
+        self.assertIsNone(deposit2.collection_id)
+        # updated_at 应被显式刷新，使归集超时监控不误判
+        self.assertGreater(deposit1.updated_at, before_updated_at)
+        self.assertFalse(DepositCollection.objects.filter(pk=collection_id).exists())
+
+    def test_release_failed_collection_is_noop_when_collection_missing(self):
+        # collection 不存在（已被先前清理）时应静默返回，不抛异常。
+        native = Crypto.objects.create(
+            name="Ethereum Release Noop Native",
+            symbol="ETHRN",
+            coingecko_id="ethereum-release-noop-native",
+        )
+        crypto = Crypto.objects.create(
+            name="Tether Release Noop",
+            symbol="USDTRN",
+            coingecko_id="tether-release-noop",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Release Noop",
+            code="eth-release-noop",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=207,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        vault_addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000700",
+        )
+        broadcast_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault_addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient="0x0000000000000000000000000000000000000711",
+            amount=Decimal("1"),
+        )
+
+        DepositService.release_failed_collection(broadcast_task=broadcast_task)
+
+        self.assertEqual(
+            DepositCollection.objects.filter(broadcast_task=broadcast_task).count(), 0
+        )
 
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)

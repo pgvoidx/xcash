@@ -13,7 +13,9 @@ from deposits.service import DepositService
 @singleton_task(timeout=64)
 def gather_deposits() -> None:
     # 外层不开事务：仅读取候选集 ID 列表，避免长事务持有行锁期间执行 RPC 调用。
-    # 逐条在 service 内开独立事务处理，防止一次性锁住全批记录直至所有 RPC 结束，阻塞其他并发操作。
+    # 每条 deposit 交给 DepositService.collect_deposit 处理：prepare 阶段事务外做
+    # 链上 RPC（余额 / gas 价格 / gas 补充），execute 阶段事务内做 DB 原子三步写入，
+    # 把行锁持有时间压到最短，避免阻塞其他并发操作。
     candidate_ids = list(
         Deposit.objects.filter(
             status=DepositStatus.COMPLETED,
