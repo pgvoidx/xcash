@@ -9,6 +9,14 @@ from django.utils import timezone
 
 logger = structlog.get_logger()
 
+# 指数退避序列（秒）：第 N 次重试前等待 _RETRY_BACKOFF[N]，超出长度使用最后一个值
+# 覆盖窗口：前 5 次共 ~46 分钟，之后每小时一次，配合 max_retries=20 总计约 15 小时
+_RETRY_BACKOFF = (8, 60, 300, 600, 1800, 3600)
+
+
+def _retry_countdown(retries: int) -> int:
+    return _RETRY_BACKOFF[min(retries, len(_RETRY_BACKOFF) - 1)]
+
 
 def send_internal_callback(
     *,
@@ -39,9 +47,11 @@ def send_internal_callback(
 @shared_task(
     bind=True,
     ignore_result=True,
-    max_retries=3,
+    max_retries=20,
     soft_time_limit=10,
     time_limit=15,
+    acks_late=True,
+    reject_on_worker_lost=True,
 )
 def _deliver_internal_callback(
     self,
@@ -87,4 +97,4 @@ def _deliver_internal_callback(
             error=str(exc),
             retry=self.request.retries,
         )
-        raise self.retry(countdown=2 ** (self.request.retries + 1), exc=exc)
+        raise self.retry(countdown=_retry_countdown(self.request.retries), exc=exc)
