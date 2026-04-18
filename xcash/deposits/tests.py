@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -301,6 +302,95 @@ class DepositServiceCoreTests(TestCase):
         collected = DepositService.collect_deposit(deposit)
         self.assertFalse(collected)
 
+    @patch("deposits.service.DepositCollection.objects.create", side_effect=RuntimeError("collection insert failed"))
+    @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)
+    @patch("deposits.service.AdapterFactory.get_adapter")
+    @patch("deposits.service.RecipientAddress.objects.filter")
+    def test_collect_deposit_rolls_back_task_creation_when_collection_insert_fails(
+        self,
+        recipient_filter_mock,
+        adapter_factory_mock,
+        _ensure_gas_mock,
+        _collection_create_mock,
+    ):
+        project = Project.objects.create(
+            name="DemoAtomicCollection",
+            wallet=Wallet.objects.create(),
+            gather_worth=Decimal("0.1"),
+        )
+        customer = Customer.objects.create(project=project, uid="customer-atomic")
+        native = Crypto.objects.create(
+            name="Ethereum Atomic Native",
+            symbol="ETHATOMIC",
+            coingecko_id="ethereum-atomic-native",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Atomic",
+            code="eth-atomic",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=205,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        deposit_addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x00000000000000000000000000000000000005A1",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=deposit_addr,
+        )
+        recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
+            SimpleNamespace(
+                address=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000005b1"
+                )
+            )
+        )
+        adapter_factory_mock.return_value = SimpleNamespace(
+            get_balance=Mock(return_value=10**18)
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "5a" * 32,
+            event_id="native:atomic",
+            crypto=native,
+            from_address="0x0000000000000000000000000000000000000501",
+            to_address=deposit_addr.address,
+            value="1000000000000000000",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        deposit = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer,
+            status=DepositStatus.COMPLETED,
+        )
+
+        collected = DepositService.collect_deposit(deposit)
+
+        self.assertFalse(collected)
+        deposit.refresh_from_db()
+        self.assertIsNone(deposit.collection_id)
+        self.assertEqual(DepositCollection.objects.count(), 0)
+        self.assertEqual(
+            BroadcastTask.objects.filter(
+                transfer_type=TransferType.DepositCollection
+            ).count(),
+            0,
+        )
+        self.assertEqual(EvmBroadcastTask.objects.count(), 0)
+
     # -- content property null 保护 --
 
     def test_content_property_handles_null_customer(self):
@@ -328,7 +418,7 @@ class DepositServiceCoreTests(TestCase):
 
 
 
-class DepositServiceDecimalsTests(SimpleTestCase):
+class DepositServiceDecimalsTests(TestCase):
     def test_inactive_placeholder_transfer_does_not_create_deposit(self):
         # inactive 占位币允许进入余额统计，但不能进入商户充值业务流。
         transfer = SimpleNamespace(
@@ -427,31 +517,31 @@ class DepositServiceDecimalsTests(SimpleTestCase):
             transfer_type=TransferType.DepositCollection,
         )
 
+    @patch("deposits.service.db_transaction.atomic", return_value=nullcontext())
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer", side_effect=RuntimeError("broadcast task create failed"))
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)
     @patch.object(DepositService, "_lock_collectible_group")
-    @patch("deposits.service.DepositCollection.objects")
+    @patch("deposits.service.DepositCollection.objects.create")
     @patch("deposits.service.Deposit.objects.filter")
-    @patch.object(DepositService, "_cleanup_placeholder_collection")
-    def test_collect_deposit_failure_does_not_persist_collection_hash(
+    def test_collect_deposit_failure_keeps_relations_unbound_before_commit(
         self,
-        cleanup_mock,
         deposit_filter_mock,
-        collection_objects_mock,
+        collection_create_mock,
         lock_group_mock,
         ensure_gas_mock,
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
+        _schedule_transfer_mock,
+        _atomic_mock,
     ):
-        # 归集发送失败时占位 collection 应被清理，deposit 可被下次重试。
+        # 创建 BroadcastTask 失败时，不应提前创建 collection 或绑定 deposit 关系。
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
             SimpleNamespace(address="0xrecipient")
         )
-        # mock 占位 collection 创建和 deposit 批量更新
-        collection_objects_mock.create.return_value = SimpleNamespace(pk=999)
         deposit_filter_mock.return_value.update = Mock()
 
         chain = SimpleNamespace(
@@ -492,8 +582,8 @@ class DepositServiceDecimalsTests(SimpleTestCase):
         collected = DepositService.collect_deposit(deposit)
 
         self.assertFalse(collected)
-        # 广播失败后占位 collection 应被清理
-        cleanup_mock.assert_called_once()
+        collection_create_mock.assert_not_called()
+        deposit_filter_mock.return_value.update.assert_not_called()
         ensure_gas_mock.assert_called_once()
 
     def test_should_collect_uses_chain_specific_crypto_decimals(self):
@@ -1134,8 +1224,8 @@ class DepositTransferRematchTests(TestCase):
         self.assertEqual(deposit1.collection_id, collection.pk)
         self.assertEqual(deposit2.collection_id, collection.pk)
 
-    def test_drop_collection_clears_hash_for_retry(self):
-        # 归集失效后应清空 collection_hash 和 collection_transfer，使充币重新进入待归集队列。
+    def test_drop_collection_preserves_fixed_relations_and_clears_chain_observation(self):
+        # 归集链上转账失效后，只清理链上观测字段，Deposit -> Collection / Collection -> BroadcastTask 关系保持不变。
         project = Project.objects.create(
             name="DemoDropCollection",
             wallet=Wallet.objects.create(),
@@ -1161,6 +1251,22 @@ class DepositTransferRematchTests(TestCase):
             chain_id=204,
             rpc="http://localhost:8545",
             active=True,
+        )
+        vault_addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000400",
+        )
+        broadcast_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=vault_addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient="0x0000000000000000000000000000000000000411",
+            amount=Decimal("3"),
         )
         collection_hash = "0x" + "e" * 64
         transfer1 = OnchainTransfer.objects.create(
@@ -1193,8 +1299,26 @@ class DepositTransferRematchTests(TestCase):
             status=TransferStatus.CONFIRMED,
             type=TransferType.Deposit,
         )
+        collection_transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=3,
+            hash=collection_hash,
+            event_id="erc20:dc",
+            crypto=crypto,
+            from_address="0x0000000000000000000000000000000000000411",
+            to_address="0x0000000000000000000000000000000000000400",
+            value="3",
+            amount=Decimal("3"),
+            timestamp=3,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.DepositCollection,
+        )
         collection = DepositCollection.objects.create(
             collection_hash=collection_hash,
+            transfer=collection_transfer,
+            broadcast_task=broadcast_task,
+            collected_at=timezone.now(),
         )
         deposit1 = Deposit.objects.create(
             customer=customer,
@@ -1211,10 +1335,15 @@ class DepositTransferRematchTests(TestCase):
 
         DepositService.drop_collection(collection)
 
+        collection.refresh_from_db()
         deposit1.refresh_from_db()
         deposit2.refresh_from_db()
-        self.assertIsNone(deposit1.collection_id)
-        self.assertIsNone(deposit2.collection_id)
+        self.assertEqual(deposit1.collection_id, collection.pk)
+        self.assertEqual(deposit2.collection_id, collection.pk)
+        self.assertIsNone(collection.collection_hash)
+        self.assertIsNone(collection.transfer_id)
+        self.assertIsNone(collection.collected_at)
+        self.assertEqual(collection.broadcast_task_id, broadcast_task.pk)
 
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)

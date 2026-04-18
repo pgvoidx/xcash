@@ -126,8 +126,8 @@ class DepositCollection(models.Model):
     两个字段造成的语义重叠和数据不一致风险。
     """
 
-    # unique=True + null=True：PostgreSQL 中多个 NULL 不违反唯一约束，
-    # 允许 prepare_collection 阶段创建占位记录（hash 为 NULL），广播成功后回写真实 hash。
+    # unique=True + null=True：Collection 在创建任务后即可落库，但真实链上 tx hash
+    # 要等到扫描器观察到归集转账时才会回填，因此需要允许暂时为 NULL。
     collection_hash = HashField(
         max_length=66,
         unique=True,
@@ -191,7 +191,8 @@ class Deposit(models.Model):
         verbose_name=_("状态"),
         default=DepositStatus.CONFIRMING,
     )
-    # 多笔 Deposit 可共享同一笔归集交易（DepositCollection）
+    # 多笔 Deposit 可共享同一笔归集交易（DepositCollection）；
+    # 一旦进入归集流程，该关系即固定为该次归集记录。
     collection = models.ForeignKey(
         "deposits.DepositCollection",
         on_delete=models.SET_NULL,

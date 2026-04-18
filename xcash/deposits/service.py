@@ -173,11 +173,9 @@ class DepositService:
     def prepare_collection(cls, deposit: Deposit) -> dict | None:  # noqa: PLR0911
         """
         归集准备阶段（必须在事务内调用）：加锁、校验、计算金额，
-        预创建 DepositCollection 占位记录并关联到 deposits。
+        为后续同事务创建 DepositCollection + BroadcastTask 准备参数。
 
-        返回 dict 包含广播所需参数，返回 None 表示无需归集。
-        预创建 collection 确保：即使后续链上广播成功但 DB 异常，
-        deposits 已被标记 collection 非空，不会被 gather_deposits 重复扫描。
+        返回 dict 包含归集任务创建所需参数，返回 None 表示无需归集。
         """
         grouped_deposits, deposit = cls._resolve_collection_group(deposit)
         if deposit is None:
@@ -217,17 +215,8 @@ class DepositService:
         ):
             return None
 
-        # 预创建占位 collection（hash 为 NULL），并关联 deposits，
-        # 保证 deposits 在事务提交后即标记为"归集中"，避免双重归集。
-        collection = DepositCollection.objects.create(collection_hash=None)
-        group_ids = [item.pk for item in grouped_deposits]
-        Deposit.objects.filter(pk__in=group_ids).update(
-            collection=collection,
-            updated_at=timezone.now(),
-        )
-
         return {
-            "collection_id": collection.pk,
+            "group_ids": [item.pk for item in grouped_deposits],
             "address": deposit_addr,
             "crypto": crypto,
             "chain": chain,
@@ -237,63 +226,51 @@ class DepositService:
         }
 
     @classmethod
+    @db_transaction.atomic
     def execute_collection(cls, params: dict) -> bool:
         """
-        归集执行阶段（事务外调用）：广播链上交易并回写 broadcast_task。
+        在同一事务内同时创建 BroadcastTask、DepositCollection 以及两者关系。
 
-        广播失败时清理占位 collection 以便下次重试。
-        广播成功后即使后续 DB 更新失败，deposits 仍标记为"归集中"，
-        try_match_collection 会在链上交易被节点推送时自动关联。
+        事务成功提交后，Deposit -> Collection 与 Collection -> BroadcastTask
+        两条关系同时成立；若任一步失败，则整个事务回滚，不留下半成品状态。
         """
-        try:
-            from evm.models import EvmBroadcastTask
+        from evm.models import EvmBroadcastTask
 
-            decimals = params["crypto"].get_decimals(params["chain"])
-            value_raw = int(params["amount"] * Decimal(10**decimals))
-            task = EvmBroadcastTask.schedule_transfer(
-                address=params["address"],
-                crypto=params["crypto"],
-                chain=params["chain"],
-                to=params["recipient_address"],
-                value_raw=value_raw,
-                transfer_type=TransferType.DepositCollection,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "归集充币失败，清理占位 collection",
-                deposit_id=params["deposit_id"],
-                chain=params["chain"].code,
-                crypto=params["crypto"].symbol,
-                exc=exc,
-            )
-            cls._cleanup_placeholder_collection(params["collection_id"])
-            return False
-
-        DepositCollection.objects.filter(pk=params["collection_id"]).update(
+        decimals = params["crypto"].get_decimals(params["chain"])
+        value_raw = int(params["amount"] * Decimal(10**decimals))
+        task = EvmBroadcastTask.schedule_transfer(
+            address=params["address"],
+            crypto=params["crypto"],
+            chain=params["chain"],
+            to=params["recipient_address"],
+            value_raw=value_raw,
+            transfer_type=TransferType.DepositCollection,
+        )
+        collection = DepositCollection.objects.create(
+            collection_hash=None,
             broadcast_task=task.base_task,
+        )
+        Deposit.objects.filter(pk__in=params["group_ids"]).update(
+            collection=collection,
             updated_at=timezone.now(),
         )
         return True
 
     @classmethod
     def collect_deposit(cls, deposit: Deposit) -> bool:
-        """两阶段归集的便捷封装：prepare（事务内）+ execute（事务外）。
-        供测试和需要单方法调用的场景使用。
-        注意：调用方需自行确保 prepare 阶段在事务内执行。
-        """
-        params = cls.prepare_collection(deposit)
-        if params is None:
-            return False
-        return cls.execute_collection(params)
-
-    @classmethod
-    def _cleanup_placeholder_collection(cls, collection_id: int) -> None:
-        """清理广播失败的占位 collection，解除关联的 deposits 以便下次重试。"""
+        """归集便捷封装：在单个事务内完成 prepare + create，保证关系原子建立。"""
         try:
-            collection = DepositCollection.objects.get(pk=collection_id)
-        except DepositCollection.DoesNotExist:
-            return
-        cls.drop_collection(collection)
+            with db_transaction.atomic():
+                params = cls.prepare_collection(deposit)
+                if params is None:
+                    return False
+                return cls.execute_collection(params)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "归集任务创建失败，事务已回滚",
+                deposit_id=getattr(deposit, "id", None) or getattr(deposit, "pk", None),
+            )
+            return False
 
     @classmethod
     def _resolve_collection_group(
@@ -372,15 +349,21 @@ class DepositService:
     @db_transaction.atomic
     def drop_collection(collection: DepositCollection) -> None:
         """
-        归集交易失效：解除所有关联 Deposit 的归集记录，以便重新触发归集。
-
-        显式将关联 Deposit 的 collection 置 NULL 并更新 updated_at 时间戳，
-        再删除 DepositCollection 记录。显式 update 先于 delete 执行，
-        确保 updated_at 被正确刷新（而非依赖 on_delete=SET_NULL 的自动置空，
-        后者不会更新 updated_at）。
+        归集链上观测失效：保留固定关系，仅清空链上观测字段以等待同一任务重试/重播。
         """
-        collection.deposits.update(collection=None, updated_at=timezone.now())
-        collection.delete()
+        collection = DepositCollection.objects.select_for_update().get(pk=collection.pk)
+        if (
+            collection.collection_hash is None
+            and collection.transfer_id is None
+            and collection.collected_at is None
+        ):
+            return
+        collection.collection_hash = None
+        collection.transfer = None
+        collection.collected_at = None
+        collection.save(
+            update_fields=["collection_hash", "transfer", "collected_at", "updated_at"]
+        )
 
     @staticmethod
     def _select_recipient(*, project_id: int, chain_type: ChainType | str):
