@@ -68,6 +68,11 @@ evm_tasks = {
         "task": "evm.tasks.scan_active_evm_chains",
         "schedule": EVM_SCAN_SCHEDULE_SECONDS,
     },
+    "reconcile_stale_pending_chain_for_active_evm_chains": {
+        # 兜底：主扫描漏扫导致的 PENDING_CHAIN 卡单，周期性按 receipt 主动命中并定点复扫。
+        "task": "evm.tasks.reconcile_stale_pending_chain_for_active_evm_chains",
+        "schedule": 30,
+    },
 }
 
 # ---------------------------

@@ -45,14 +45,38 @@ class DepositAddress(models.Model):
           保证同参数幂等返回同一个 Address（不会产生孤儿记录）。
         - DepositAddress 的 get_or_create 由唯一约束 (customer, chain_type) 保证安全。
         - 并发时 signer 可能被多次调用（幂等但有额外 RPC 开销），属于可接受的代价。
+
+        L2 防御：在创建/返回充币地址之前必须校验 project 已配置对应链的
+        DEPOSIT_COLLECTION recipient。否则用户充进来的资金永远归集不出去，
+        会在 gather_deposits 队列里反复抢占调度名额，构成 DoS 攻击面。
+        校验放在 model 静态方法内（service 层），让两个 API viewset 入口
+        （public 与 internal_api）共享，不必在每个 viewset 重复实现。
+
+        快速路径仍允许命中：已经存在的 deposit address 不再次校验，避免
+        历史地址在 recipient 短暂被删除时返回失败；新建地址才必须有 recipient。
         """
-        # 快速路径：已存在直接返回
+        # 快速路径：已存在直接返回（历史地址不重复校验，避免 recipient 临时移除时影响存量用户）
         try:
             return DepositAddress.objects.get(
                 chain_type=chain.type, customer=customer
             ).address.address
         except DepositAddress.DoesNotExist:
             pass
+
+        # L2：新建充币地址前强校验 recipient 已配置；
+        # 漏配时拒绝创建，让商户/运营先在后台补配，杜绝"用户已充值但归集不出去"的死局。
+        # 局部 import 避开模块循环依赖（projects → deposits 链路反向引用）。
+        from common.error_codes import ErrorCode
+        from common.exceptions import APIError
+        from projects.models import RecipientAddress
+        from projects.models import RecipientAddressUsage
+
+        if not RecipientAddress.objects.filter(
+            project=customer.project,
+            chain_type=chain.type,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        ).exists():
+            raise APIError(ErrorCode.RECIPIENT_NOT_CONFIGURED)
 
         # 从项目钱包派生该客户专属账户（get_address 内部 get_or_create 保证幂等）
         addr = customer.project.wallet.get_address(
@@ -200,6 +224,17 @@ class Deposit(models.Model):
         blank=True,
         related_name="deposits",
         verbose_name=_("归集记录"),
+    )
+    # 防御性字段：collect_deposit 返回 False 的累计次数。
+    # gather_deposits 通过过滤 failed_collection_attempts < MAX_FAILED_ATTEMPTS
+    # 自然跳过反复失败的"毒丸"deposit（例如对应 project 配了一个会 revert 的归集
+    # recipient），避免少数失败 deposit 持续占用调度名额、阻塞整条归集流水线。
+    failed_collection_attempts = models.PositiveSmallIntegerField(
+        _("归集失败计数"),
+        default=0,
+        help_text=_(
+            "collect_deposit 返回 False 的累计次数；达到阈值后 gather_deposits 跳过该笔，等待人工介入"
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

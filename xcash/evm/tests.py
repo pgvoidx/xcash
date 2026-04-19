@@ -219,7 +219,13 @@ class EvmBroadcastTaskTests(TestCase):
             native_coin=Crypto(name="Ethereum", symbol="ETH", coingecko_id="ethereum"),
         )
         chain.__dict__["w3"] = SimpleNamespace(
-            eth=SimpleNamespace(gas_price=1, send_raw_transaction=Mock()),
+            eth=SimpleNamespace(
+                gas_price=1,
+                # 余额覆盖 2 * erc20_transfer_gas 阈值即可通过主动检查
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
+                send_raw_transaction=Mock(),
+            ),
         )
         addr = Address(
             wallet=Wallet(),
@@ -245,13 +251,13 @@ class EvmBroadcastTaskTests(TestCase):
 
         self.assertIsNotNone(broadcast_task.last_attempt_at)
 
-    @patch("withdrawals.service.WebhookService.create_event")
-    def test_broadcast_keeps_insufficient_funds_retryable_without_finalizing(
-        self, webhook_mock
-    ):
+    def test_broadcast_preflight_threshold_recharges_gas_for_collection(self):
+        # 归集场景 native 余额低于阈值：pre-flight 主动补 gas，保持 QUEUED，
+        # 不调用 estimate_gas / send_raw_transaction，不更新 last_attempt_at。
+        from deposits.models import DepositAddress
+        from deposits.models import GasRecharge
         from projects.models import Project
-        from withdrawals.models import Withdrawal
-        from withdrawals.models import WithdrawalStatus
+        from users.models import Customer
 
         native = Crypto.objects.create(
             name="Ethereum Broadcast Failure",
@@ -266,6 +272,8 @@ class EvmBroadcastTaskTests(TestCase):
             rpc="http://localhost:8545",
             native_coin=native,
             active=True,
+            base_transfer_gas=21_000,
+            erc20_transfer_gas=60_000,
         )
         wallet = Wallet.objects.create()
         project = Project.objects.create(
@@ -273,30 +281,49 @@ class EvmBroadcastTaskTests(TestCase):
             wallet=wallet,
             webhook="https://example.com/webhook",
         )
-        addr = Address.objects.create(
+        customer = Customer.objects.create(project=project, uid="c-ebf")
+        # Vault 地址必须存在，GasRechargeService 需要从钱包派生
+        Address.objects.create(
             wallet=wallet,
             chain_type=ChainType.EVM,
             usage=AddressUsage.Vault,
+            bip44_account=100_000_000,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000100"
+            ),
+        )
+        addr = Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
             bip44_account=1,
             address_index=0,
             address=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000101"
             ),
         )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=ChainType.EVM,
+            address=addr,
+        )
+        # 阈值 = value(10^18) + 2 * 1 * 60_000 = 10^18 + 120_000
+        # 余额 10^17 远低于阈值 → 触发主动补给
+        estimate_gas_mock = Mock()
+        send_raw_mock = Mock()
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
-                send_raw_transaction=Mock(
-                    side_effect=RuntimeError(
-                        "insufficient funds for gas * price + value"
-                    )
-                )
+                get_balance=Mock(return_value=10**17),
+                estimate_gas=estimate_gas_mock,
+                send_raw_transaction=send_raw_mock,
             )
         )
         base_task = BroadcastTask.objects.create(
             chain=chain,
             address=addr,
-            transfer_type=TransferType.Withdrawal,
+            transfer_type=TransferType.DepositCollection,
             crypto=native,
             recipient=Web3.to_checksum_address(
                 "0x0000000000000000000000000000000000000102"
@@ -306,17 +333,106 @@ class EvmBroadcastTaskTests(TestCase):
             stage=BroadcastTaskStage.QUEUED,
             result=BroadcastTaskResult.UNKNOWN,
         )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
             chain=chain,
-            crypto=native,
-            amount=Decimal("1"),
-            worth=Decimal("1"),
-            out_no="withdrawal-broadcast-failure",
+            nonce=0,
             to=base_task.recipient,
-            broadcast_task=base_task,
-            status=WithdrawalStatus.PENDING,
-            hash=base_task.tx_hash,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        with patch(
+            "deposits.service.GasRechargeService.request_recharge",
+            return_value=True,
+        ) as recharge_mock:
+            broadcast_task.broadcast()
+
+        base_task.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(base_task.failure_reason, "")
+        # last_attempt_at 未推进，等下一轮 dispatch 再试
+        self.assertIsNone(broadcast_task.last_attempt_at)
+        estimate_gas_mock.assert_not_called()
+        send_raw_mock.assert_not_called()
+        # 核心证据：GasRechargeService.request_recharge 被触发，参数为 erc20_gas_cost
+        recharge_mock.assert_called_once()
+        _, kwargs = recharge_mock.call_args
+        self.assertEqual(kwargs["chain"], chain)
+        self.assertEqual(kwargs["deposit_address"].address_id, addr.pk)
+        self.assertEqual(kwargs["erc20_gas_cost"], 1 * 60_000)
+
+    def test_broadcast_preflight_threshold_delegates_to_idempotent_recharge_service(self):
+        # 反复广播不应重复创建补给记录：broadcast 只负责"检测到余额不足 → 委派给
+        # GasRechargeService"，真正的幂等由 GasRechargeService.request_recharge 负责
+        # （见 GasRechargeServiceTests）。这里断言 broadcast 端每次都如实调用同一入口、
+        # 参数一致，让 service 层的幂等判定成为唯一真理。
+        from deposits.models import DepositAddress
+        from projects.models import Project
+        from users.models import Customer
+
+        native = Crypto.objects.create(
+            name="Ethereum Preflight Idempotent",
+            symbol="ETHPFID",
+            coingecko_id="ethereum-preflight-idempotent",
+        )
+        chain = Chain.objects.create(
+            code="eth-preflight-idempotent",
+            name="Ethereum Preflight Idempotent",
+            type=ChainType.EVM,
+            chain_id=20109,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+            base_transfer_gas=21_000,
+            erc20_transfer_gas=60_000,
+        )
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(
+            name="preflight-idempotent-project",
+            wallet=wallet,
+            webhook="https://example.com/webhook",
+        )
+        customer = Customer.objects.create(project=project, uid="c-pfid")
+        addr = Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000111"
+            ),
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=ChainType.EVM,
+            address=addr,
+        )
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_balance=Mock(return_value=10**17),
+                estimate_gas=Mock(),
+                send_raw_transaction=Mock(),
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000112"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
         )
         broadcast_task = EvmBroadcastTask.objects.create(
             base_task=base_task,
@@ -324,27 +440,389 @@ class EvmBroadcastTaskTests(TestCase):
             chain=chain,
             nonce=0,
             to=base_task.recipient,
-            value=0,
+            value=10**18,
             gas=21_000,
             gas_price=1,
             signed_payload="0x7261772d6279746573",
         )
 
-        with self.assertRaisesMessage(
-            RuntimeError,
-            "insufficient funds for gas * price + value",
-        ):
-            with self.captureOnCommitCallbacks(execute=True):
-                broadcast_task.broadcast()
+        with patch(
+            "deposits.service.GasRechargeService.request_recharge",
+            return_value=True,
+        ) as recharge_mock:
+            broadcast_task.broadcast()
+            broadcast_task.broadcast()
 
-        withdrawal.refresh_from_db()
+        # 两次广播都委派给同一幂等入口，参数一致；真正的去重由 service 层保障。
+        self.assertEqual(recharge_mock.call_count, 2)
+        for _, kwargs in recharge_mock.call_args_list:
+            self.assertEqual(kwargs["chain"], chain)
+            self.assertEqual(kwargs["deposit_address"].address_id, addr.pk)
+            self.assertEqual(kwargs["erc20_gas_cost"], 1 * 60_000)
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+
+    def test_broadcast_preflight_threshold_skips_gas_recharge_for_withdrawal(self):
+        # Withdrawal 从 Vault 发起，余额不足时不应补 gas（补也是 vault→vault 死循环），
+        # 仅保持 QUEUED 静默返回，等运营向 Vault 注资即可。
+        from deposits.models import GasRecharge
+
+        native = Crypto.objects.create(
+            name="Ethereum Vault Reraise",
+            symbol="ETHVR",
+            coingecko_id="ethereum-vault-reraise",
+        )
+        chain = Chain.objects.create(
+            code="eth-vault-reraise",
+            name="Ethereum Vault Reraise",
+            type=ChainType.EVM,
+            chain_id=20199,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+            base_transfer_gas=21_000,
+            erc20_transfer_gas=60_000,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000199"
+            ),
+        )
+        estimate_gas_mock = Mock()
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_balance=Mock(return_value=10**17),
+                estimate_gas=estimate_gas_mock,
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000200"
+            ),
+            amount=Decimal("1"),
+            tx_hash="0x" + "d" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        broadcast_task.broadcast()
+
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
         self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
-        webhook_mock.assert_not_called()
+        # Withdrawal 不补 gas：GasRecharge 记录为空
+        self.assertFalse(GasRecharge.objects.exists())
+        estimate_gas_mock.assert_not_called()
+        send_raw_mock.assert_not_called()
+        self.assertIsNone(broadcast_task.last_attempt_at)
+
+    def test_broadcast_finalizes_failed_on_preflight_revert(self):
+        # pre-flight 命中合约 revert：标记 FINALIZED + FAILED，并解绑 deposits。
+        from deposits.models import Deposit
+        from deposits.models import DepositAddress
+        from deposits.models import DepositCollection
+        from deposits.models import DepositStatus
+        from chains.models import OnchainTransfer
+        from chains.models import TransferStatus
+        from projects.models import Project
+        from users.models import Customer
+        from web3.exceptions import ContractLogicError
+
+        native = Crypto.objects.create(
+            name="Ethereum Preflight Revert Native",
+            symbol="ETHPR",
+            coingecko_id="ethereum-preflight-revert-native",
+        )
+        crypto = Crypto.objects.create(
+            name="Tether Preflight Revert",
+            symbol="USDTPR",
+            coingecko_id="tether-preflight-revert",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            code="eth-preflight-revert",
+            name="Ethereum Preflight Revert",
+            type=ChainType.EVM,
+            chain_id=20301,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(
+            name="preflight-revert-project", wallet=wallet,
+        )
+        customer = Customer.objects.create(project=project, uid="c-pr")
+        addr = Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000301"
+            ),
+        )
+        DepositAddress.objects.create(
+            customer=customer, chain_type=ChainType.EVM, address=addr,
+        )
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                # 余额远超 value + 2 * erc20_gas_cost，主动阈值通过
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(
+                    side_effect=ContractLogicError("execution reverted")
+                ),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000302"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        collection = DepositCollection.objects.create(
+            collection_hash=None,
+            broadcast_task=base_task,
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "e1" * 32,
+            event_id="erc20:pr1",
+            crypto=crypto,
+            from_address="0x0000000000000000000000000000000000000311",
+            to_address=addr.address,
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        deposit = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer,
+            status=DepositStatus.COMPLETED,
+            collection=collection,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**6,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        broadcast_task.broadcast()
+
+        base_task.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        deposit.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
+        self.assertEqual(
+            base_task.failure_reason,
+            BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        )
+        send_raw_mock.assert_not_called()
+        # release_failed_collection 副作用：deposit 解绑、collection 被删
+        self.assertIsNone(deposit.collection_id)
+        self.assertFalse(
+            DepositCollection.objects.filter(pk=collection.pk).exists()
+        )
+
+    def test_broadcast_preflight_success_proceeds_to_send(self):
+        # pre-flight 通过时继续进入 send_raw_transaction 流程，base_task 进入 PENDING_CHAIN。
+        native = Crypto.objects.create(
+            name="Ethereum Preflight Ok",
+            symbol="ETHPOK",
+            coingecko_id="ethereum-preflight-ok",
+        )
+        chain = Chain.objects.create(
+            code="eth-preflight-ok",
+            name="Ethereum Preflight Ok",
+            type=ChainType.EVM,
+            chain_id=20401,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000401"
+            ),
+        )
+        estimate_gas_mock = Mock(return_value=21_000)
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                # 余额充足：主动阈值通过
+                get_balance=Mock(return_value=10**19),
+                estimate_gas=estimate_gas_mock,
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000402"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        broadcast_task.broadcast()
+
+        base_task.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        estimate_gas_mock.assert_called_once()
+        send_raw_mock.assert_called_once()
+        self.assertIsNotNone(broadcast_task.last_attempt_at)
+
+        # 回归保护：estimate_gas 必须不带 nonce，否则同地址前序 tx 未 confirm 时
+        # 节点会把本 preflight 直接判为 "Nonce too high"(-32003)，使后续任务被当成
+        # 假失败反复重试。nonce 顺序由 has_lower_queued_nonce + pipeline 保证，与
+        # estimate_gas 校验的"交易语义是否可执行"属于两件事，务必解耦。
+        preflight_arg = estimate_gas_mock.call_args.args[0]
+        self.assertNotIn("nonce", preflight_arg)
+
+    def test_broadcast_preflight_rpc_error_reraises(self):
+        # pre-flight 遇到通用 RPC 错误（非 insufficient funds / revert）应上抛给 Celery 重试，
+        # base_task 保持 QUEUED，不创建 GasRecharge。
+        from deposits.models import GasRecharge
+
+        native = Crypto.objects.create(
+            name="Ethereum Preflight Timeout",
+            symbol="ETHPTO",
+            coingecko_id="ethereum-preflight-timeout",
+        )
+        chain = Chain.objects.create(
+            code="eth-preflight-timeout",
+            name="Ethereum Preflight Timeout",
+            type=ChainType.EVM,
+            chain_id=20402,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000402"
+            ),
+        )
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                # 余额充足，主动阈值通过，才能进入 estimate_gas 分支
+                get_balance=Mock(return_value=10**19),
+                estimate_gas=Mock(
+                    side_effect=RuntimeError("connection timeout")
+                ),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000403"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        with self.assertRaisesMessage(RuntimeError, "connection timeout"):
+            broadcast_task.broadcast()
+
+        base_task.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        send_raw_mock.assert_not_called()
+        # 没有任何 GasRecharge 记录被创建
+        self.assertFalse(GasRecharge.objects.exists())
 
     def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
         native = Crypto.objects.create(
@@ -374,6 +852,8 @@ class EvmBroadcastTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
                 send_raw_transaction=Mock(
                     side_effect=RuntimeError("replacement transaction underpriced")
                 )
@@ -444,6 +924,8 @@ class EvmBroadcastTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
                 send_raw_transaction=Mock(side_effect=RuntimeError("nonce too low"))
             )
         )
@@ -595,6 +1077,8 @@ class EvmBroadcastTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
                 send_raw_transaction=Mock(side_effect=RuntimeError("already known"))
             )
         )
@@ -880,6 +1364,9 @@ class EvmChainScannerServiceTests(TestCase):
         self.assertFalse(TxHash.objects.filter(broadcast_task=task.base_task).exists())
 
         chain.__dict__["w3"].eth.send_raw_transaction = Mock()
+        chain.__dict__["w3"].eth.estimate_gas = Mock(return_value=21_000)
+        # 提供 get_balance，让主动阈值通过 pre-flight 进入 estimate_gas
+        chain.__dict__["w3"].eth.get_balance = Mock(return_value=10**18)
         task.broadcast()
 
         task.refresh_from_db()
@@ -1749,6 +2236,154 @@ class EvmTaskQueueTests(TestCase):
         # pipeline 满，不应链式调度下一个
         delay_mock.assert_not_called()
 
+    def _setup_deposit_with_pending_recharge(
+        self,
+        *,
+        recharge_stage: str,
+        recharge_result: str = BroadcastTaskResult.UNKNOWN,
+        recharge_failure_reason: str = "",
+        recharged_at=None,
+    ):
+        """为"地址正在等 gas"场景构造 fixture：返回 (collection_task, recharge_entry).
+
+        复用此 helper 的 3 个测试只在 `recharge_stage / recharged_at` 处有差异，
+        其余编排保持一致，便于对比三种触发条件下的 dispatch 决策。
+        """
+        from deposits.models import DepositAddress
+        from deposits.models import GasRecharge
+        from projects.models import Project
+        from users.models import Customer
+
+        project = Project.objects.create(
+            name="dispatch-pending-recharge-project",
+            wallet=self.wallet,
+            webhook="https://example.com/webhook",
+        )
+        customer = Customer.objects.create(
+            project=project, uid="dispatch-pending-recharge"
+        )
+        deposit_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=1,
+            address_index=10,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000003e1"
+            ),
+        )
+        deposit_address_record = DepositAddress.objects.create(
+            customer=customer,
+            chain_type=ChainType.EVM,
+            address=deposit_addr,
+        )
+        vault_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=11,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000003e2"
+            ),
+        )
+
+        # 待 dispatch 的 collection 任务，address = deposit 地址
+        collection_task = self._create_evm_task(
+            tx_hash="0x" + "aa" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            address=deposit_addr,
+        )
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmBroadcastTask.objects.filter(pk=collection_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        # 关联的 gas-recharge 任务，address = Vault。
+        # 先用 QUEUED/UNKNOWN 通过 BroadcastTask.full_clean() 校验，再 update() 到目标状态；
+        # 这是唯一绕过"FAILED 必须带 failure_reason"约束的写法，同时能精确构造终局组合。
+        recharge_task = self._create_evm_task(
+            tx_hash="0x" + "bb" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            address=vault_addr,
+        )
+        BroadcastTask.objects.filter(pk=recharge_task.base_task_id).update(
+            stage=recharge_stage,
+            result=recharge_result,
+            failure_reason=recharge_failure_reason,
+        )
+        recharge_entry = GasRecharge.objects.create(
+            deposit_address=deposit_address_record,
+            broadcast_task=recharge_task.base_task,
+            recharged_at=recharged_at,
+        )
+        return collection_task, recharge_entry
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_skips_task_whose_address_has_active_pending_gas_recharge(
+        self, delay_mock
+    ):
+        # 同地址已有活跃中（未到账、broadcast_task 未 finalized）的 GasRecharge 时，
+        # dispatch 必须暂不投递该地址的 collection，让 picker 名额让给其它地址，
+        # 避免"collection 反复 pre-flight 不过占队头 → Vault gas-recharge 永远排不上"的死锁。
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        collection_task, _ = self._setup_deposit_with_pending_recharge(
+            recharge_stage=BroadcastTaskStage.QUEUED,
+            recharged_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        picked_pks = {call.args[0] for call in delay_mock.call_args_list}
+        self.assertNotIn(collection_task.pk, picked_pks)
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_resumes_task_after_gas_recharge_recharged_at_written(
+        self, delay_mock
+    ):
+        # recharged_at 已写入代表 gas 已实际到账（_dispatch_business_confirm 里设置），
+        # 本地 balance 必然充足，dispatch 应当恢复对该地址的调度。
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        collection_task, _ = self._setup_deposit_with_pending_recharge(
+            recharge_stage=BroadcastTaskStage.FINALIZED,
+            recharge_result=BroadcastTaskResult.SUCCESS,
+            recharged_at=timezone.now(),
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        picked_pks = {call.args[0] for call in delay_mock.call_args_list}
+        self.assertIn(collection_task.pk, picked_pks)
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_resumes_task_when_gas_recharge_finalized_failed(
+        self, delay_mock
+    ):
+        # gas-recharge 终局失败（broadcast_task.stage=FINALIZED+FAILED）意味着 recharged_at
+        # 永远不会被写入；若仍按"recharged_at IS NULL"一刀切，本地址会被永久阻塞。
+        # 因此 filter 只在 broadcast_task 处于活跃阶段时才跳过。
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        collection_task, _ = self._setup_deposit_with_pending_recharge(
+            recharge_stage=BroadcastTaskStage.FINALIZED,
+            recharge_result=BroadcastTaskResult.FAILED,
+            recharge_failure_reason=BroadcastTaskFailureReason.INSUFFICIENT_BALANCE,
+            recharged_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        picked_pks = {call.args[0] for call in delay_mock.call_args_list}
+        self.assertIn(collection_task.pk, picked_pks)
+
 
 class EvmInternalTaskConfirmationTests(TestCase):
     def setUp(self):
@@ -1983,6 +2618,9 @@ class EvmInternalTaskConfirmationTests(TestCase):
                     side_effect=TransactionNotFound("missing")
                 ),
                 gas_price=1,
+                # 主动阈值 pre-flight 需要 get_balance，余额充足即可通过
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
                 send_raw_transaction=send_raw_mock,
             )
         )

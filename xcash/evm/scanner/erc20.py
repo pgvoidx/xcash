@@ -112,17 +112,12 @@ class EvmErc20TransferScanner:
                     created_transfers=0,
                 )
 
-            logs = rpc_client.get_transfer_logs(
-                from_block=from_block,
-                to_block=to_block,
-                token_addresses=list(watch_set.tokens_by_address.keys()),
-                topic0=ERC20_TRANSFER_TOPIC0,
-            )
-            created_transfers = cls._persist_logs(
+            logs, created_transfers = cls.scan_range_without_cursor(
                 chain=chain,
-                logs=logs,
                 rpc_client=rpc_client,
                 watch_set=watch_set,
+                from_block=from_block,
+                to_block=to_block,
             )
         except EvmScannerRpcError as exc:
             cls._mark_cursor_error(cursor=cursor, exc=exc)
@@ -188,6 +183,42 @@ class EvmErc20TransferScanner:
         else:
             to_block = min(latest_block, from_block + effective_batch_size - 1)
         return from_block, to_block
+
+    @classmethod
+    def scan_range_without_cursor(
+        cls,
+        *,
+        chain: Chain,
+        rpc_client: EvmScannerRpcClient,
+        watch_set: EvmWatchSet,
+        from_block: int,
+        to_block: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """对 [from_block, to_block] 区间拉取 + 落库 ERC20 Transfer 日志。
+
+        不触碰任何游标，也不改变链头记录；返回 (原始日志列表, 本次新增 Transfer 数)，
+        给兜底复扫提供可观测指标。区间非法或 watch_set 为空时静默返回空结果。
+        """
+        if (
+            from_block > to_block
+            or not watch_set.watched_addresses
+            or not watch_set.tokens_by_address
+        ):
+            return [], 0
+
+        logs = rpc_client.get_transfer_logs(
+            from_block=from_block,
+            to_block=to_block,
+            token_addresses=list(watch_set.tokens_by_address.keys()),
+            topic0=ERC20_TRANSFER_TOPIC0,
+        )
+        created = cls._persist_logs(
+            chain=chain,
+            logs=logs,
+            rpc_client=rpc_client,
+            watch_set=watch_set,
+        )
+        return logs, created
 
     @classmethod
     def _persist_logs(

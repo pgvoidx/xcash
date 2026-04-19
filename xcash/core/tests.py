@@ -737,6 +737,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             pre_notify=True,
         )
         customer = Customer.objects.create(project=project, uid="evm-customer-1")
+        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
+        RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address="0x000000000000000000000000000000000000beef",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
         deposit_address = DepositAddress.get_address(chain, customer)
         amount = Decimal("0.03")
         self._prime_evm_scan_cursors(chain=chain)
@@ -827,11 +834,23 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         deposit.refresh_from_db()
         self.assertEqual(deposit.status, DepositStatus.COMPLETED)
 
-        # --- 第一轮：deposit 地址余额 = collection_amount，没有多余 gas → 补充 gas 并跳过 ---
-        collected_round1 = DepositService.collect_deposit(deposit)
-        self.assertFalse(collected_round1)
+        # --- 第一轮：prepare 不再关心 gas，直接创建 collection 任务；gas 判定由 broadcast 层兜底 ---
+        collected = DepositService.collect_deposit(deposit)
+        self.assertTrue(collected)
         deposit.refresh_from_db()
-        self.assertIsNone(deposit.collection_id)
+        self.assertIsNotNone(deposit.collection_id)
+
+        collection_task = EvmBroadcastTask.objects.get(
+            base_task=deposit.collection.broadcast_task
+        )
+
+        # --- 第二轮：broadcast pre-flight 发现 balance < value + 2×erc20_gas → 请 Vault 补 gas，保持 QUEUED ---
+        collection_task.broadcast()
+        collection_task.refresh_from_db()
+        self.assertEqual(
+            collection_task.base_task.stage, BroadcastTaskStage.QUEUED
+        )
+        self.assertIsNone(collection_task.last_attempt_at)
 
         gas_task = EvmBroadcastTask.objects.filter(
             base_task__chain=chain,
@@ -850,15 +869,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         gas_task.broadcast()
         w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
 
-        # --- 第二轮：gas 已到账，归集成功 ---
-        collected_round2 = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected_round2)
-        deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
-
-        collection_task = EvmBroadcastTask.objects.get(
-            base_task=deposit.collection.broadcast_task
-        )
+        # --- 第三轮：gas 已到账，再次广播归集任务，pre-flight 阈值通过 → 上链 ---
         collection_task.broadcast()
         deposit.collection.refresh_from_db()
         self.assertIsNone(deposit.collection.collection_hash)
@@ -1027,6 +1038,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             pre_notify=True,
         )
         customer = Customer.objects.create(project=project, uid="erc20-customer-1")
+        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
+        RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address="0x000000000000000000000000000000000000beef",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
         deposit_address = DepositAddress.get_address(chain, customer)
         self._prime_evm_scan_cursors(chain=chain)
 
@@ -1127,11 +1145,23 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         deposit.refresh_from_db()
         self.assertEqual(deposit.status, DepositStatus.COMPLETED)
 
-        # --- 第一轮：deposit 地址无原生币，gas 不足 → 补充 gas 并跳过 ---
-        collected_round1 = DepositService.collect_deposit(deposit)
-        self.assertFalse(collected_round1)
+        # --- 第一轮：prepare 不再关心 gas，直接创建 collection 任务；gas 判定由 broadcast 层兜底 ---
+        collected = DepositService.collect_deposit(deposit)
+        self.assertTrue(collected)
         deposit.refresh_from_db()
-        self.assertIsNone(deposit.collection_id)
+        self.assertIsNotNone(deposit.collection_id)
+
+        collection_task = EvmBroadcastTask.objects.get(
+            base_task=deposit.collection.broadcast_task
+        )
+
+        # --- 第二轮：broadcast pre-flight 发现 native < 2×erc20_gas → 请 Vault 补 gas，保持 QUEUED ---
+        collection_task.broadcast()
+        collection_task.refresh_from_db()
+        self.assertEqual(
+            collection_task.base_task.stage, BroadcastTaskStage.QUEUED
+        )
+        self.assertIsNone(collection_task.last_attempt_at)
 
         gas_task = EvmBroadcastTask.objects.filter(
             base_task__chain=chain,
@@ -1153,15 +1183,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         gas_task.broadcast()
         w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
 
-        # --- 第二轮：gas 已到账，归集成功 ---
-        collected_round2 = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected_round2)
-        deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
-
-        collection_task = EvmBroadcastTask.objects.get(
-            base_task=deposit.collection.broadcast_task
-        )
+        # --- 第三轮：gas 已到账，再次广播归集任务，pre-flight 阈值通过 → 上链 ---
         collection_task.broadcast()
         deposit.collection.refresh_from_db()
         self.assertIsNone(deposit.collection.collection_hash)
@@ -1213,6 +1235,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             pre_notify=True,
         )
         customer = Customer.objects.create(project=project, uid="evm-customer-task-1")
+        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
+        RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address="0x000000000000000000000000000000000000beef",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
         deposit_address = DepositAddress.get_address(chain, customer)
         self._prime_evm_scan_cursors(chain=chain)
 
@@ -1368,6 +1397,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         customer = Customer.objects.create(
             project=project, uid="evm-native-replay-customer"
         )
+        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
+        RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address="0x000000000000000000000000000000000000beef",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
         deposit_address = DepositAddress.get_address(chain, customer)
         self._prime_evm_scan_cursors(chain=chain)
 
@@ -1436,6 +1472,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             wallet=Wallet.generate(),
         )
         customer = Customer.objects.create(project=project, uid="erc20-replay-customer")
+        # L2：DepositAddress.get_address 现在要求 project 已配 DEPOSIT_COLLECTION recipient。
+        RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address="0x000000000000000000000000000000000000beef",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
         deposit_address = DepositAddress.get_address(chain, customer)
         self._prime_evm_scan_cursors(chain=chain)
 

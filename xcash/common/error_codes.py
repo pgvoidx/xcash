@@ -48,6 +48,9 @@ class ErrorCode(Enum):
     # Deposit
     # 修复：同上
     INVALID_UID = ErrorInfo("4000", _("无效UID"), 400)
+    RECIPIENT_NOT_CONFIGURED = ErrorInfo(
+        "4001", _("项目未配置该链的归集收款地址"), 400
+    )
 
     # Invoice
     INVALID_INVOICE_CURRENCY = ErrorInfo("5000", _("账单类型错误"), 400)

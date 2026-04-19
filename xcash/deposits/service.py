@@ -11,6 +11,8 @@ logger = structlog.get_logger()
 
 from chains.adapters import AdapterFactory
 from chains.models import AddressUsage
+from chains.models import BroadcastTaskResult
+from chains.models import BroadcastTaskStage
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
@@ -25,6 +27,87 @@ from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 from common.internal_callback import send_internal_callback
 from webhooks.service import WebhookService
+
+
+class GasRechargeService:
+    """Vault → 充币地址的 gas 预充服务。
+
+    抽离职责：把"向充币地址补 native gas"的完整动作收敛成一个幂等方法，
+    当前由 EVM 广播 pre-flight（EvmBroadcastTask.broadcast）统一调用。
+    任何调用方都不应自行拼装 GasRecharge 记录或 Vault 交易调度。
+    """
+
+    @staticmethod
+    def request_recharge(
+        *,
+        deposit_address: DepositAddress,
+        chain,
+        erc20_gas_cost: int,
+    ) -> bool:
+        """幂等地从 Vault 发起一笔 native 币补充到 deposit_address。
+
+        入参：
+        - deposit_address: 目标 DepositAddress 记录（对应某客户某链上的充币地址）。
+        - chain: Chain 对象，需能取到 native_coin、wallet 及单次转账 gas 消耗。
+        - erc20_gas_cost: 由调用方基于当前 gas_price 预估的单次 ERC-20 转账
+          总 gas 成本（wei）。
+
+        补给量固定为 10 × erc20_gas_cost，足够支撑后续约 10 次 ERC-20 归集，
+        避免为单次归集反复触发补给。
+
+        返回：
+        - True 表示已成功创建一笔 Vault → 地址的 gas 补充任务，或已有尚未广播的
+          pending GasRecharge（幂等跳过，代表本轮请求"已经生效"）。
+        - False 表示 gas 参数非法（<= 0）或补充交易调度失败，本轮无法补充。
+
+        并发幂等：同地址若已存在 stage=QUEUED 且 result=UNKNOWN 的
+        GasRecharge（尚未上链且尚未到账），直接返回 True 跳过新建。
+        已广播或已终局（result != UNKNOWN 或 stage 流转到后续阶段）的
+        GasRecharge 不阻塞新请求，视作历史补充已完成或失败，需要再起一笔新的。
+        """
+        recharge_raw = 10 * erc20_gas_cost
+        if recharge_raw <= 0:
+            return False
+
+        # 防重复：用广播任务的语义状态判定"尚未上链的 gas 补充"。
+        # 历史实现曾用 tx_hash="" 过滤，但 BroadcastTask.tx_hash 是 HashField(null=True)，
+        # 默认落 NULL 而非空串，导致过滤永远空集、幂等失效。
+        has_pending_recharge = GasRecharge.objects.filter(
+            deposit_address=deposit_address,
+            recharged_at__isnull=True,
+            broadcast_task__stage=BroadcastTaskStage.QUEUED,
+            broadcast_task__result=BroadcastTaskResult.UNKNOWN,
+        ).exists()
+        if has_pending_recharge:
+            return True
+
+        vault_addr = deposit_address.customer.project.wallet.get_address(
+            chain_type=chain.type,
+            usage=AddressUsage.Vault,
+        )
+        try:
+            from evm.models import EvmBroadcastTask
+
+            task = EvmBroadcastTask.schedule_transfer(
+                address=vault_addr,
+                chain=chain,
+                crypto=chain.native_coin,
+                to=deposit_address.address.address,
+                value_raw=recharge_raw,
+                transfer_type=TransferType.GasRecharge,
+            )
+            GasRecharge.objects.create(
+                deposit_address=deposit_address,
+                broadcast_task=task.base_task,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Gas 补充交易调度失败",
+                deposit_address_id=deposit_address.pk,
+                chain=chain.code,
+            )
+            return False
+        return True
 
 
 class DepositService:
@@ -170,10 +253,13 @@ class DepositService:
         deposit.delete()
 
     @classmethod
-    def prepare_collection(cls, deposit: Deposit) -> dict | None:  # noqa: PLR0911
+    def prepare_collection(cls, deposit: Deposit) -> dict | None:
         """
-        归集准备阶段（事务外调用）：读取候选组、做链上 RPC 检查（余额、gas 价格、
-        gas 补充）、计算金额，返回 execute_collection 创建关系所需的参数。
+        归集准备阶段（事务外调用）：读取候选组、做最基础的"有余额、该归集"检查，
+        返回 execute_collection 创建关系所需的参数。
+
+        gas 充足性判断已收敛到广播层 EvmBroadcastTask.broadcast 的 pre-flight，
+        本阶段不再读取 gas_price、不再计算 gas_cost、不再触发 GasRecharge。
 
         本方法不加数据库锁，execute_collection 会在事务内对候选组再次加锁校验，
         避免 prepare 与 execute 之间的状态漂移引起重复归集。
@@ -207,15 +293,6 @@ class DepositService:
         amount = cls._calculate_collection_amount(grouped_deposits)
 
         if not cls._should_collect(deposit, amount):
-            return None
-
-        # Gas 充足性检查：不足时自动补充并跳过本轮，等下一轮 gas 到账后重试
-        if not cls._ensure_gas_and_check(
-            deposit=deposit,
-            deposit_address=deposit_addr,
-            adapter=adapter,
-            collection_amount=amount,
-        ):
             return None
 
         return {
@@ -442,114 +519,6 @@ class DepositService:
 
         deadline = deposit.created_at + timedelta(days=project.gather_period)
         return timezone.now() >= deadline
-
-    @classmethod
-    def _ensure_gas_and_check(
-        cls,
-        *,
-        deposit: Deposit,
-        deposit_address,
-        adapter,
-        collection_amount: Decimal,
-    ) -> bool:
-        """
-        检查归集 gas 是否充足，不足时自动补充并跳过本轮归集。
-
-        原生币：余额 >= 归集金额 + 2 次原生币转账 gas。
-        代币：原生币余额 >= 1 次 ERC-20 转账 gas。
-        Gas 补充金额 = min(5 次 ERC-20 转账, 10 次原生币转账)。
-
-        返回 True 表示 gas 充足可立即归集，False 表示已发起补充、本轮跳过。
-        """
-        chain = deposit.transfer.chain
-        crypto = deposit.transfer.crypto
-
-        gas_price = cls._get_gas_price(chain)
-        if gas_price <= 0:
-            # 非 EVM 或 RPC 异常，直接放行由后续交易自行校验
-            return True
-
-        native_gas_cost = gas_price * chain.base_transfer_gas
-        erc20_gas_cost = gas_price * chain.erc20_transfer_gas
-
-        # --- 判断 gas 是否充足 ---
-        if crypto == chain.native_coin or crypto.is_native:
-            # 原生币归集：余额需覆盖归集金额 + 2 次原生币转账 gas
-            crypto_decimals = crypto.get_decimals(chain)
-            collection_raw = int(collection_amount * Decimal(10**crypto_decimals))
-            required_gas_raw = 2 * native_gas_cost
-            current_balance = adapter.get_balance(
-                deposit_address.address, chain, crypto
-            )
-            if current_balance >= collection_raw + required_gas_raw:
-                return True
-        else:
-            # 代币归集：需要足够原生币支付 ERC-20 转账 gas
-            current_native = adapter.get_balance(
-                deposit_address.address, chain, chain.native_coin
-            )
-            if current_native >= erc20_gas_cost:
-                return True
-
-        # --- Gas 不足，发起补充 ---
-
-        # 防重复：如果该充值地址已有尚未广播的 Gas 补充任务（stage=queued 且无 tx_hash），
-        # 跳过本轮等待广播即可。已广播或已终结的 GasRecharge 不阻塞新请求。
-        deposit_addr_record = DepositAddress.objects.get(
-            customer=deposit.customer,
-            chain_type=chain.type,
-        )
-        has_pending_recharge = GasRecharge.objects.filter(
-            deposit_address=deposit_addr_record,
-            recharged_at__isnull=True,
-            broadcast_task__stage="queued",
-            broadcast_task__tx_hash="",
-        ).exists()
-        if has_pending_recharge:
-            return False
-
-        recharge_raw = min(5 * erc20_gas_cost, 10 * native_gas_cost)
-        if recharge_raw <= 0:
-            return False
-
-        vault_addr = deposit.customer.project.wallet.get_address(
-            chain_type=chain.type,
-            usage=AddressUsage.Vault,
-        )
-        try:
-            from evm.models import EvmBroadcastTask
-
-            task = EvmBroadcastTask.schedule_transfer(
-                address=vault_addr,
-                chain=chain,
-                crypto=chain.native_coin,
-                to=deposit_address.address,
-                value_raw=recharge_raw,
-                transfer_type=TransferType.GasRecharge,
-            )
-            GasRecharge.objects.create(
-                deposit_address=deposit_addr_record,
-                broadcast_task=task.base_task,
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Gas 补充交易失败，跳过本轮归集",
-                deposit_id=deposit.id,
-                chain=chain.code,
-            )
-        # 无论补充成功与否，本轮均跳过，等下一轮 gas 到账后重试
-        return False
-
-    @staticmethod
-    def _get_gas_price(chain) -> int:
-        """获取 EVM 链当前 gas price（wei），非 EVM 返回 0。"""
-        if chain.type != ChainType.EVM:
-            return 0
-        try:
-            return chain.w3.eth.gas_price
-        except Exception:  # noqa: BLE001
-            logger.warning("获取 gas_price 失败", chain=chain.code)
-            return 0
 
     @staticmethod
     def _lock_pending_group_ids(group_ids: list[int]) -> set[int]:

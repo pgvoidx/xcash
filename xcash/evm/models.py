@@ -12,8 +12,10 @@ from web3 import Web3
 
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
+from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
+from chains.models import TransferType
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
@@ -154,6 +156,44 @@ class EvmBroadcastTask(UndeletableModel):
             return None
         self._ensure_signed_with_latest_gas_price()
 
+        # pre-flight 第 1 步：主动阈值检查。
+        # 用 *当前* gas_price（不是本任务签名时锁定的 self.gas_price）估算单次
+        # ERC-20 转账 gas 成本，再按 value + 2 * erc20_gas_cost 作为预算阈值：
+        # - ERC-20 归集：value=0 → 阈值 = 2 * erc20_gas_cost，保留一次重试冗余。
+        # - 原生币归集：阈值 = value + 2 * erc20_gas_cost，预留两次 gas 波动空间。
+        # 这里刻意用 erc20_transfer_gas（而非 base_transfer_gas）给出更高的安全垫，
+        # 避免归集链路在 gas 跳涨时被节点反复拒绝。
+        current_native_balance = self.chain.w3.eth.get_balance(self.address.address)  # noqa: SLF001
+        current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
+        erc20_gas_cost = current_gas_price * self.chain.erc20_transfer_gas
+        buffer_required = int(self.value) + 2 * erc20_gas_cost
+        if current_native_balance < buffer_required:
+            # 仅归集场景补 gas；Withdrawal 的 address 是 Vault 本身，补 gas 无意义，
+            # 保持 QUEUED 静默返回，等运营向 Vault 注资即可。
+            if self._is_eligible_for_gas_recharge():
+                self._request_gas_recharge(erc20_gas_cost=erc20_gas_cost)
+            # 不更新 last_attempt_at，避免 reconcile/dispatch 误判为活跃任务。
+            return None
+
+        # pre-flight 第 2 步：estimate_gas 兜底 revert。
+        # 主动阈值已覆盖余额不足；这里只防合约 revert / token 余额不足一类
+        # 注定失败的交易被反复 send_raw_transaction。通用 RPC 错误原样上抛给 Celery。
+        #
+        # 注意：estimate_gas 不传 nonce。nonce 顺序由 has_lower_queued_nonce +
+        # pipeline_full 保证，与"交易语义能否执行"无关；一旦绑定 nonce，EVM 节点
+        # 在同地址前序 tx 未 confirm 时会对本 tx 直接返回 "Nonce too high"
+        # （geth/anvil 的 -32003），把所有同地址后续任务打成假失败。
+        preflight_tx = self._build_transaction_dict(gas_price=self.gas_price)
+        preflight_tx.pop("nonce", None)
+        try:
+            self.chain.w3.eth.estimate_gas(preflight_tx)  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            if self._is_execution_reverted_error(exc):
+                self._finalize_preflight_revert(exc)
+                return None
+            raise
+
+        # pre-flight 通过，真正广播。
         self.last_attempt_at = timezone.now()
         self.save(update_fields=["last_attempt_at"])
 
@@ -166,6 +206,95 @@ class EvmBroadcastTask(UndeletableModel):
             raise
         self._mark_pending_chain()
         return None
+
+    @staticmethod
+    def _is_execution_reverted_error(exc: Exception) -> bool:
+        """识别链上模拟时合约回退 / 交易本身注定失败的错误。"""
+        from web3.exceptions import ContractLogicError
+
+        if isinstance(exc, ContractLogicError):
+            return True
+        msg = str(exc).lower()
+        if "execution reverted" in msg:
+            return True
+        return False
+
+    def _is_eligible_for_gas_recharge(self) -> bool:
+        """判断当前任务是否适用"向其 address 补 gas"。
+
+        条件：
+        - base_task.transfer_type == DepositCollection（只有归集地址才需要补给）
+        - self.address 已登记为有效 DepositAddress（排除其它用途的地址）
+
+        Withdrawal 任务的 address 本身即 Vault，补 gas 会形成 vault→vault 死循环，
+        故排除；无 base_task 或非归集类型直接返回 False。
+        """
+        if not self.base_task_id:
+            return False
+        if self.base_task.transfer_type != TransferType.DepositCollection:
+            return False
+
+        from deposits.models import DepositAddress
+
+        return DepositAddress.objects.filter(address=self.address).exists()
+
+    def _request_gas_recharge(self, *, erc20_gas_cost: int) -> None:
+        """pre-flight 阈值不足时，委托 GasRechargeService 幂等补 gas。
+
+        调用此方法前须已通过 _is_eligible_for_gas_recharge 校验，确保
+        self.address 存在对应 DepositAddress。内部再 select_related 拉齐
+        Vault 派生所需字段；若 DB 关系异常（极端情况）记录日志静默跳过，
+        让上层保持 QUEUED 等下一轮再试，而不是把 pre-flight 打成硬错误。
+        """
+        from deposits.models import DepositAddress
+        from deposits.service import GasRechargeService
+
+        try:
+            deposit_address = DepositAddress.objects.select_related(
+                "customer__project__wallet", "address",
+            ).get(address=self.address)
+        except DepositAddress.DoesNotExist:
+            return
+
+        GasRechargeService.request_recharge(
+            deposit_address=deposit_address,
+            chain=self.chain,
+            erc20_gas_cost=erc20_gas_cost,
+        )
+
+    @db_transaction.atomic
+    def _finalize_preflight_revert(self, exc: Exception) -> None:
+        """pre-flight 检测到链上 execution reverted 时，终局失败并释放关联业务。
+
+        与 evm.coordinator._finalize_failed_task 同义，但触发源是"尚未上链的
+        模拟回退"——仍处于 QUEUED 或 PENDING_CHAIN 阶段，因此放宽 stage 限制。
+        加行锁 + 幂等过滤，杜绝并发重复终局。
+        """
+        if not self.base_task_id:
+            return
+
+        locked_task = (
+            EvmBroadcastTask.objects.select_for_update().filter(pk=self.pk).first()
+        )
+        if locked_task is None or not locked_task.base_task_id:
+            return
+
+        base_task = locked_task.base_task
+        updated = BroadcastTask.mark_finalized_failed(
+            task_id=base_task.pk,
+            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        )
+        if not updated:
+            return
+
+        if base_task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.service import WithdrawalService
+
+            WithdrawalService.fail_withdrawal(broadcast_task=base_task)
+        elif base_task.transfer_type == TransferType.DepositCollection:
+            from deposits.service import DepositService
+
+            DepositService.release_failed_collection(broadcast_task=base_task)
 
     def _ensure_signed_with_latest_gas_price(self) -> None:
         """首次广播时签名并生成首个 tx_hash；重试时仅在 gas 提升时重签。"""

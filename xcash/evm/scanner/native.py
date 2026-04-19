@@ -193,8 +193,37 @@ class EvmNativeDirectScanner:
         from_block: int,
         to_block: int,
     ) -> tuple[int, int]:
+        # 保持薄封装以维持主扫描路径的既有调用语义；真正的逐块扫描逻辑统一下沉到
+        # scan_range_without_cursor，兜底复扫可以在不触碰游标的前提下复用。
+        return cls.scan_range_without_cursor(
+            chain=chain,
+            rpc_client=rpc_client,
+            watch_set=watch_set,
+            from_block=from_block,
+            to_block=to_block,
+        )
+
+    @classmethod
+    def scan_range_without_cursor(
+        cls,
+        *,
+        chain: Chain,
+        rpc_client: EvmScannerRpcClient,
+        watch_set: EvmWatchSet,
+        from_block: int,
+        to_block: int,
+    ) -> tuple[int, int]:
+        """对 [from_block, to_block] 区间执行一次原生币直转扫描。
+
+        该方法只负责产生 OnchainTransfer，不读不写 EvmScanCursor，也不推进链头。
+        调用方需要自行确保 watch_set 有效并决定是否跳过空区间，便于兜底复扫在不
+        污染主扫描游标的前提下复用完整的解析 + 落库 + 派发管线。
+        """
         observed_transfers = 0
         created_transfers = 0
+        if from_block > to_block or not watch_set.watched_addresses:
+            # watch_set 为空时逐块扫描只会命中 0 笔，但仍会拉全量区块；提前返回避免浪费 RPC。
+            return observed_transfers, created_transfers
         decimals = chain.native_coin.get_decimals(chain)
 
         for block_number in range(from_block, to_block + 1):

@@ -10,6 +10,8 @@ from evm.scanner.erc20 import EvmErc20ScanResult
 from evm.scanner.erc20 import EvmErc20TransferScanner
 from evm.scanner.native import EvmNativeDirectScanner
 from evm.scanner.native import EvmNativeScanResult
+from evm.scanner.rpc import EvmScannerRpcClient
+from evm.scanner.watchers import load_watch_set
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,21 @@ class EvmScanSummary:
 
     native: EvmNativeScanResult
     erc20: EvmErc20ScanResult
+
+
+@dataclass(frozen=True)
+class EvmReconcileScanResult:
+    """汇总一次兜底复扫的产出，供调用方观测命中情况。
+
+    from_block / to_block 仅记录合并出的扫描区间，便于日志与断言；不会映射到任何游标。
+    """
+
+    from_block: int
+    to_block: int
+    observed_native: int
+    observed_erc20: int
+    created_native: int
+    created_erc20: int
 
 
 class EvmChainScannerService:
@@ -77,4 +94,75 @@ class EvmChainScannerService:
                 )
                 else EvmChainScannerService._empty_erc20_result(chain=chain)
             ),
+        )
+
+    @classmethod
+    def scan_blocks_for_reconcile(
+        cls,
+        *,
+        chain: Chain,
+        block_numbers: set[int],
+    ) -> EvmReconcileScanResult:
+        """对指定块集合执行一次兜底复扫，不推进任何游标。
+
+        - 合并为 [min..max] 连续区间，利用 native 逐块扫 / ERC20 logFilter 的原生能力，
+          比按块分别调用更省 RPC 调用。
+        - 复用 watch_set + OnchainTransfer 创建 + on_commit 派发 process 的既有管线，
+          (chain, hash, event_id) 唯一约束天然保证复扫幂等。
+        - 禁止读写 EvmScanCursor；主扫描负责游标管理，兜底只产生观测副作用。
+        """
+        if chain.type != ChainType.EVM:
+            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
+        if not block_numbers:
+            return EvmReconcileScanResult(
+                from_block=0,
+                to_block=-1,
+                observed_native=0,
+                observed_erc20=0,
+                created_native=0,
+                created_erc20=0,
+            )
+
+        from_block = min(block_numbers)
+        to_block = max(block_numbers)
+        rpc_client = EvmScannerRpcClient(chain=chain)
+        watch_set = load_watch_set(chain=chain)
+
+        observed_native, created_native = 0, 0
+        observed_erc20, created_erc20 = 0, 0
+
+        if cls._is_enabled(
+            chain=chain,
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        ):
+            observed_native, created_native = (
+                EvmNativeDirectScanner.scan_range_without_cursor(
+                    chain=chain,
+                    rpc_client=rpc_client,
+                    watch_set=watch_set,
+                    from_block=from_block,
+                    to_block=to_block,
+                )
+            )
+
+        if cls._is_enabled(
+            chain=chain,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
+        ):
+            logs, created_erc20 = EvmErc20TransferScanner.scan_range_without_cursor(
+                chain=chain,
+                rpc_client=rpc_client,
+                watch_set=watch_set,
+                from_block=from_block,
+                to_block=to_block,
+            )
+            observed_erc20 = len(logs)
+
+        return EvmReconcileScanResult(
+            from_block=from_block,
+            to_block=to_block,
+            observed_native=observed_native,
+            observed_erc20=observed_erc20,
+            created_native=created_native,
+            created_erc20=created_erc20,
         )

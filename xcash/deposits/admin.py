@@ -1,8 +1,12 @@
 from django.contrib import admin
+from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import format_html
+from django.utils.html import format_html_join
 from unfold.decorators import display
 
 from common.admin import ReadOnlyModelAdmin
+from common.utils.math import format_decimal_stripped
 from core.monitoring import OperationalRiskService
 from deposits.models import Deposit
 from deposits.models import DepositAddress
@@ -304,10 +308,104 @@ class DepositAddressAdmin(ReadOnlyModelAdmin):
     list_display = (
         "uid",
         "address",
+        "chain_type",
+        "display_deposit_count",
     )
+    list_filter = ("chain_type",)
     search_fields = ("address__address", "customer__uid")
     list_display_links = None
+    readonly_fields = (
+        "customer",
+        "chain_type",
+        "address",
+        "deposit_history",
+    )
+    fieldsets = (
+        (
+            "充币地址",
+            {"fields": ("customer", "chain_type", "address")},
+        ),
+        (
+            "充币历史",
+            {"fields": ("deposit_history",)},
+        ),
+    )
 
     @display(description="UID", label=True)
     def uid(self, instance: DepositAddress):
         return instance.customer.uid
+
+    @display(description="充币笔数")
+    def display_deposit_count(self, instance: DepositAddress):
+        # 列表页给出概览计数，帮运营快速找到有充币的地址；值本身不支持排序，
+        # 否则需要在 queryset 上做 subquery 计数，对大表不划算。
+        return self._deposits_queryset(instance).count()
+
+    @display(description="充币历史")
+    def deposit_history(self, instance: DepositAddress):
+        # Deposit 与 DepositAddress 通过 (customer_id, chain_type) 联合映射而非 FK，
+        # 不能用 Django 标准 InlineModelAdmin；改用 HTML 表格在详情页内联展示最近 50 笔，
+        # 并在每行提供跳转到 Deposit 详情的链接，运营体验等同"轻量 Inline"。
+        deposits = (
+            self._deposits_queryset(instance)
+            .select_related(
+                "transfer__chain",
+                "transfer__crypto",
+                "collection",
+            )
+            .order_by("-created_at")[:50]
+        )
+        if not deposits:
+            return "—"
+
+        header = format_html(
+            "<thead><tr>"
+            "<th>SysNo</th><th>链</th><th>币种</th><th>数量</th>"
+            "<th>状态</th><th>归集</th><th>时间</th>"
+            "</tr></thead>"
+        )
+        body = format_html_join(
+            "",
+            "<tr>"
+            '<td><a href="{}">{}</a></td>'
+            "<td>{}</td><td>{}</td><td>{}</td>"
+            "<td>{}</td><td>{}</td><td>{}</td>"
+            "</tr>",
+            (
+                (
+                    reverse("admin:deposits_deposit_change", args=[d.pk]),
+                    d.sys_no,
+                    d.transfer.chain.code,
+                    d.transfer.crypto.symbol,
+                    format_decimal_stripped(d.transfer.amount),
+                    d.get_status_display(),
+                    self._format_collection_state(d),
+                    d.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                for d in deposits
+            ),
+        )
+        return format_html(
+            '<table class="w-full border-collapse text-sm">'
+            "{}<tbody>{}</tbody>"
+            "</table>",
+            header,
+            body,
+        )
+
+    @staticmethod
+    def _deposits_queryset(instance: DepositAddress):
+        # 统一聚合口径：同客户 + 同链类型的全部 Deposit，
+        # 保持与业务层 DepositService 对"同地址归集分组"的联合键一致。
+        return Deposit.objects.filter(
+            customer_id=instance.customer_id,
+            transfer__chain__type=instance.chain_type,
+        )
+
+    @staticmethod
+    def _format_collection_state(deposit: Deposit) -> str:
+        if not deposit.collection_id:
+            return "未归集"
+        if deposit.collection.collected_at:
+            return "已归集"
+        return "归集中"

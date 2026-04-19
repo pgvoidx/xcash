@@ -16,7 +16,6 @@ APPS_DIR = BASE_DIR / "xcash"
 sys.path.append(str(APPS_DIR))
 
 from common.logger import configure_structlog  # noqa: E402
-from common.logger import ExcludeStaticFilesRequestFilter  # noqa: E402
 from common.logger import shared_processors  # noqa: E402
 
 configure_structlog()
@@ -329,27 +328,11 @@ LOGGING = {
             ],
             "foreign_pre_chain": shared_processors,
         },
-        "django.server": {
-            "()": "django.utils.log.ServerFormatter",
-            "format": "[{server_time}] {message}",
-            "style": "{",
-        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "console",
-        },
-        "django.server": {
-            "level": "INFO",
-            "class": "logging.StreamHandler",
-            "formatter": "django.server",
-            "filters": ["exclude_static_files_requests"],
-        },
-    },
-    "filters": {
-        "exclude_static_files_requests": {
-            "()": ExcludeStaticFilesRequestFilter,
         },
     },
     "root": {"level": "INFO", "handlers": ["console"]},
@@ -358,11 +341,6 @@ LOGGING = {
         "django.request": {
             "handlers": ["console"],
             "level": "ERROR",
-            "propagate": False,
-        },
-        "django.server": {
-            "handlers": ["django.server"],
-            "level": "INFO",
             "propagate": False,
         },
         "httpx": {"level": "WARNING"},
