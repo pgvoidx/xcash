@@ -33,7 +33,9 @@ REDIS_URL = env.str(
 # Internal API
 # ------------------------------------------------------------------------------
 INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
-SAAS_CALLBACK_URL = env.str("SAAS_CALLBACK_URL", default="")
+# 只填 SaaS 的 scheme+host，/callbacks/xcash 路径由 internal_callback 自己拼
+# 空串 = 关闭回调推送
+SAAS_CALLBACK_URL = env.str("SAAS_CALLBACK_URL", default="http://host.docker.internal:6689")
 INTERNAL_API_ALLOWED_IP = ""
 
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts

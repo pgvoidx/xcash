@@ -5,7 +5,7 @@ from django.test import override_settings
 
 
 class InternalCallbackTest(TestCase):
-    @override_settings(SAAS_CALLBACK_URL="http://saas.local/callbacks/xcash/")
+    @override_settings(SAAS_CALLBACK_URL="http://saas.local")
     @patch("common.internal_callback.httpx.Client")
     def test_deliver_sends_post_with_bearer_token(self, mock_client_cls):
         from common.internal_callback import _deliver_internal_callback
@@ -22,6 +22,7 @@ class InternalCallbackTest(TestCase):
 
         mock_client.post.assert_called_once()
         call_kwargs = mock_client.post.call_args
+        assert call_kwargs.args[0] == "http://saas.local/callbacks/xcash"
         assert "Authorization" in call_kwargs.kwargs["headers"]
         payload = call_kwargs.kwargs["json"]
         assert payload["event"] == "invoice.confirmed"
@@ -29,9 +30,9 @@ class InternalCallbackTest(TestCase):
         assert payload["sys_no"] == "INV-001"
         assert payload["worth"] == "100.00"
 
-    @override_settings(SAAS_CALLBACK_URL="")
+    @override_settings(INTERNAL_API_TOKEN="")
     @patch("common.internal_callback.httpx.Client")
-    def test_deliver_skips_when_url_empty(self, mock_client_cls):
+    def test_deliver_skips_when_token_missing(self, mock_client_cls):
         from common.internal_callback import _deliver_internal_callback
 
         _deliver_internal_callback(
@@ -44,7 +45,7 @@ class InternalCallbackTest(TestCase):
 
         mock_client_cls.assert_not_called()
 
-    @override_settings(SAAS_CALLBACK_URL="http://saas.local/callbacks/xcash/")
+    @override_settings(SAAS_CALLBACK_URL="http://saas.local")
     @patch("common.internal_callback.httpx.Client")
     def test_deliver_retries_on_http_error(self, mock_client_cls):
         import httpx

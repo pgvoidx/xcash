@@ -9,6 +9,9 @@ from django.utils import timezone
 
 logger = structlog.get_logger()
 
+# SaaS 侧接收回调的固定路径；SAAS_CALLBACK_URL 只配 scheme+host，路径由这里拼
+_SAAS_CALLBACK_PATH = "/callbacks/xcash"
+
 # 指数退避序列（秒）：第 N 次重试前等待 _RETRY_BACKOFF[N]，超出长度使用最后一个值
 # 覆盖窗口：前 5 次共 ~46 分钟，之后每小时一次，配合 max_retries=20 总计约 15 小时
 _RETRY_BACKOFF = (8, 60, 300, 600, 1800, 3600)
@@ -28,9 +31,9 @@ def send_internal_callback(
 ) -> None:
     """
     在事务提交后异步发送内部回调给 SaaS。
-    SAAS_CALLBACK_URL 为空则跳过。
+    INTERNAL_API_TOKEN 为空视为未对接 SaaS，直接跳过（没 token 也过不了 SaaS 的鉴权）。
     """
-    if not settings.SAAS_CALLBACK_URL:
+    if not settings.INTERNAL_API_TOKEN:
         return
 
     transaction.on_commit(
@@ -63,9 +66,9 @@ def _deliver_internal_callback(
     currency: str,
 ) -> None:
     """Celery task：向 SaaS 发送内部回调 POST 请求。"""
-    url = settings.SAAS_CALLBACK_URL
-    if not url:
+    if not settings.INTERNAL_API_TOKEN:
         return
+    url = f"{settings.SAAS_CALLBACK_URL.rstrip('/')}{_SAAS_CALLBACK_PATH}"
 
     payload = {
         "event": event,
