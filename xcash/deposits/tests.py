@@ -1353,12 +1353,14 @@ class DepositTransferRematchTests(TestCase):
             transfer=transfer1,
             status=DepositStatus.COMPLETED,
             collection=collection,
+            failed_collection_attempts=0,
         )
         deposit2 = Deposit.objects.create(
             customer=customer,
             transfer=transfer2,
             status=DepositStatus.COMPLETED,
             collection=collection,
+            failed_collection_attempts=3,
         )
         collection_id = collection.pk
         before_updated_at = deposit1.updated_at
@@ -1369,6 +1371,11 @@ class DepositTransferRematchTests(TestCase):
         deposit2.refresh_from_db()
         self.assertIsNone(deposit1.collection_id)
         self.assertIsNone(deposit2.collection_id)
+        # failed_collection_attempts 必须在释放时累加：gather_deposits 只在
+        # collect_deposit 返回 False 时累加，pre-flight revert / 链上失败走的是
+        # release_failed_collection 路径，若不累加会让 MAX_FAILED_ATTEMPTS 防御失效。
+        self.assertEqual(deposit1.failed_collection_attempts, 1)
+        self.assertEqual(deposit2.failed_collection_attempts, 4)
         # updated_at 应被显式刷新，使归集超时监控不误判
         self.assertGreater(deposit1.updated_at, before_updated_at)
         self.assertFalse(DepositCollection.objects.filter(pk=collection_id).exists())

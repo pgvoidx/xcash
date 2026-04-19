@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import structlog
 from django.db import transaction as db_transaction
+from django.db.models import F
 from django.utils import timezone
 
 logger = structlog.get_logger()
@@ -471,6 +472,13 @@ class DepositService:
         回 collection__isnull=True 状态，下一轮 gather_deposits 才能重新发起
         归集，否则这些 deposit 会永久卡死在已失败的 collection 上。
 
+        同时对每条被释放的 deposit 累加 failed_collection_attempts：gather_deposits
+        自身的累加只覆盖 collect_deposit 返回 False 的路径，而 pre-flight revert /
+        链上 receipt.status=0 这类"collect_deposit 已返回 True、但广播任务终态失败"
+        的情形，会把 deposit 放回候选池但不会走到 gather 的累加分支，必须在释放时
+        显式累加，避免配错 recipient 等"确定性失败"形成无限重试循环。用 F 表达式
+        原子自增，防止读-改-写 race condition。
+
         显式先 update 再 delete，以刷新 deposits.updated_at（on_delete=SET_NULL
         的级联清空不会更新 updated_at，会影响归集超时监控）。
         """
@@ -481,7 +489,11 @@ class DepositService:
         )
         if collection is None:
             return
-        collection.deposits.update(collection=None, updated_at=timezone.now())
+        collection.deposits.update(
+            collection=None,
+            failed_collection_attempts=F("failed_collection_attempts") + 1,
+            updated_at=timezone.now(),
+        )
         collection.delete()
 
     @staticmethod

@@ -403,10 +403,17 @@ def _maybe_trigger_collection_verification(stress_run_id: int) -> None:
     )
 
 
-@shared_task(ignore_result=True, soft_time_limit=360, time_limit=420)
-@singleton_task(timeout=420, use_params=True)
+@shared_task(ignore_result=True, soft_time_limit=1740, time_limit=1800)
+@singleton_task(timeout=1800, use_params=True)
 def verify_deposit_collection(stress_run_id: int) -> None:
-    """Phase 2：触发归集并验证所有 WEBHOOK_OK 的 deposit cases 是否被正确归集。"""
+    """Phase 2：触发归集并验证所有 WEBHOOK_OK 的 deposit cases 是否被正确归集。
+
+    time_limit / singleton timeout 统一为 30 分钟：等待策略改成"uncollected 连续
+    2 轮不下降"后，实际等待时长由归集流水线的真实吞吐决定；7 分钟硬顶会在
+    5000+ 笔规模下抢先于进度判定触发，因此放宽到 30 分钟（按 1000 笔约 ~4 分钟
+    的吞吐，30 分钟可覆盖约 ~7500 笔，足够覆盖当前压测规模）。singleton timeout
+    与 hard time_limit 对齐，避免锁提前释放导致任务重入。
+    """
     from deposits.models import Deposit
     from deposits.tasks import gather_deposits as _gather_deposits_task
 
@@ -441,7 +448,6 @@ def verify_deposit_collection(stress_run_id: int) -> None:
         )
         return
 
-    # 循环触发归集，最多等待 5 分钟
     # Transfer.hash 带 0x 前缀，case.tx_hash 可能不带，构建两种形式用于匹配
     tx_hashes = []
     for c in webhook_ok_cases:
@@ -451,8 +457,12 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             tx_hashes.append(f"0x{h}")
         else:
             tx_hashes.append(h.removeprefix("0x"))
-    deadline = timezone.now() + timedelta(minutes=5)
-    while timezone.now() < deadline:
+    # 基于进度判定：uncollected 连续 2 轮不下降才判定停滞退出。相比固定时间
+    # 窗口，能自适应不同规模的压测——小规模提早收尾，大规模随归集流水线
+    # 的真实吞吐继续等待，避免尾部已归集的 case 被误判为失败。
+    stall_rounds = 0
+    prev_uncollected: int | None = None
+    while True:
         # 同步调用归集逻辑
         try:
             _gather_deposits_task()
@@ -476,6 +486,21 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             )
             break
 
+        # 第 1 轮无参考值；从第 2 轮开始与上一轮比较。只要 uncollected 还在
+        # 下降就重置停滞计数，避免慢吞吐被误判。
+        if prev_uncollected is not None and uncollected >= prev_uncollected:
+            stall_rounds += 1
+            if stall_rounds >= 2:
+                logger.warning(
+                    "stress.deposit_collection.stalled",
+                    stress_run_id=stress_run_id,
+                    uncollected=uncollected,
+                )
+                break
+        else:
+            stall_rounds = 0
+
+        prev_uncollected = uncollected
         time.sleep(30)
 
     # 逐个验证归集结果

@@ -1,11 +1,13 @@
 # xcash/stress/evm.py
 """EVM 链上支付：直连 Anvil 本地测试链。"""
+import time
 from decimal import Decimal
 
 import structlog
 from django.conf import settings
-from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from web3 import Web3
+
+from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 
 logger = structlog.get_logger()
 _EVM_GAS_BUFFER_WEI = 10**16
@@ -27,6 +29,32 @@ def _set_balance(w3: Web3, address: str, value: int) -> None:
     )
     if response.get("error"):
         raise RuntimeError(f"anvil_setBalance failed: {response['error']}")
+
+
+def sync_chain_clock() -> None:
+    """把 Anvil 链上时钟拉齐到系统当前时间。
+
+    Anvil 链时钟是进程启动时刻 + 出块递增，长时间运行后会相对系统时钟漂移，
+    导致 block.timestamp（也就是 OnchainTransfer.datetime）落后 now() 几十秒。
+    这会让 invoices.service.try_match_invoice 的时间窗口条件
+    `invoice__started_at__lte=transfer.datetime` 失配——invoice 是在 Python 端
+    按 now() 写入 started_at，transfer.datetime 来自链上块时间——即使 chain /
+    crypto / pay_address / pay_amount 全部精确对得上也不会被匹配。
+    由 StressService.start 在每轮压测启动时调用一次：拉齐后 Anvil 按默认 1s
+    间隔出块，链时钟与系统时钟在单轮压测时长内保持同步。失败时降级为 warning，
+    不阻断压测启动（BTC-only 压测或未连 Anvil 环境下同样允许失败）。
+    """
+    try:
+        w3 = _get_w3()
+        response = w3.provider.make_request("anvil_setTime", [int(time.time())])
+        if response.get("error"):
+            logger.warning(
+                "stress.evm.sync_chain_clock_failed",
+                error=response["error"],
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("stress.evm.sync_chain_clock_error", error=str(exc))
+
 
 def _require_contract(w3: Web3, address: str) -> str:
     """要求本地 ERC20 合约已存在；支付链路不负责部署。"""

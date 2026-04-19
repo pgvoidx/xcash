@@ -4,6 +4,7 @@ import importlib
 import json
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import ANY
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -446,7 +447,9 @@ class StressServiceTests(SimpleTestCase):
             payer.address,
             "pending",
         )
-        w3.provider.make_request.assert_called_once()
+        w3.provider.make_request.assert_called_once_with(
+            "anvil_setBalance", [ANY, ANY]
+        )
 
     def test_send_native_uses_dedicated_payer_account(self):
         payer = Mock()
@@ -472,7 +475,9 @@ class StressServiceTests(SimpleTestCase):
             )
 
         w3.eth.account.create.assert_called_once_with()
-        w3.provider.make_request.assert_called_once()
+        w3.provider.make_request.assert_called_once_with(
+            "anvil_setBalance", [ANY, ANY]
+        )
         self.assertEqual(result["payer_address"], payer.address)
         payment_tx = payer.sign_transaction.call_args.args[0]
         self.assertEqual(payment_tx["from"], payer.address)
@@ -525,7 +530,9 @@ class StressServiceTests(SimpleTestCase):
             )
 
         w3.eth.account.create.assert_called_once_with()
-        w3.provider.make_request.assert_called_once()
+        w3.provider.make_request.assert_called_once_with(
+            "anvil_setBalance", [ANY, ANY]
+        )
         contract.functions.mint.assert_called_once_with(payer.address, 5_000_000)
         transfer_tx = payer.sign_transaction.call_args.args[0]
         self.assertEqual(transfer_tx["from"], payer.address)

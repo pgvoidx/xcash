@@ -106,11 +106,16 @@ class StressService:
     @staticmethod
     def start(stress: StressRun) -> None:
         """触发测试执行。"""
+        from .evm import sync_chain_clock
         from .tasks import execute_deposit_case
         from .tasks import execute_stress_case
         from .tasks import execute_withdrawal_case
         from .tasks import finalize_stress_timeout
         from .tasks import verify_deposit_collection
+
+        # 每轮压测启动时把 Anvil 链时钟拉齐到系统时间，避免 block.timestamp
+        # 漂移导致 try_match_invoice 的时间窗口过滤失败。详见 evm.sync_chain_clock。
+        sync_chain_clock()
 
         stress.status = StressRunStatus.RUNNING
         stress.started_at = timezone.now()
