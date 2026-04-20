@@ -35,7 +35,9 @@ class DepositAddress(models.Model):
         return self.address.address
 
     @staticmethod
-    def get_address(chain: Chain, customer: Customer) -> AddressStr:
+    def _get_address_by_chain_type(
+        *, chain_type: ChainType | str, customer: Customer
+    ) -> AddressStr:
         """
         获取（或首次创建）某客户在指定链类型上的充币地址。
 
@@ -58,7 +60,7 @@ class DepositAddress(models.Model):
         # 快速路径：已存在直接返回（历史地址不重复校验，避免 recipient 临时移除时影响存量用户）
         try:
             return DepositAddress.objects.get(
-                chain_type=chain.type, customer=customer
+                chain_type=chain_type, customer=customer
             ).address.address
         except DepositAddress.DoesNotExist:
             pass
@@ -73,25 +75,39 @@ class DepositAddress(models.Model):
 
         if not RecipientAddress.objects.filter(
             project=customer.project,
-            chain_type=chain.type,
+            chain_type=chain_type,
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         ).exists():
             raise APIError(ErrorCode.RECIPIENT_NOT_CONFIGURED)
 
         # 从项目钱包派生该客户专属账户（get_address 内部 get_or_create 保证幂等）
         addr = customer.project.wallet.get_address(
-            chain_type=chain.type,
+            chain_type=chain_type,
             usage=AddressUsage.Deposit,
             address_index=customer.address_index,
         )
 
         # get_or_create 保证唯一约束 (customer, chain_type) 下的并发创建安全
         deposit_addr, _ = DepositAddress.objects.get_or_create(
-            chain_type=chain.type,
+            chain_type=chain_type,
             customer=customer,
             defaults={"address": addr},
         )
         return deposit_addr.address.address
+
+    @staticmethod
+    def get_address(chain: Chain, customer: Customer) -> AddressStr:
+        return DepositAddress._get_address_by_chain_type(
+            chain_type=chain.type, customer=customer
+        )
+
+    @staticmethod
+    def get_address_by_chain_type(
+        *, chain_type: ChainType | str, customer: Customer
+    ) -> AddressStr:
+        return DepositAddress._get_address_by_chain_type(
+            chain_type=chain_type, customer=customer
+        )
 
 
 class DepositStatus(models.TextChoices):

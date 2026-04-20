@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
 from chains.models import Chain
+from chains.models import ChainType
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from currencies.models import Crypto
@@ -56,9 +57,7 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             raise APIError(ErrorCode.PROJECT_NOT_FOUND)
 
         if chain_type:
-            # 按链类型查，取任意活跃链（同类型链共享地址）
-            chain = Chain.objects.filter(type=chain_type, active=True).first()
-            if chain is None:
+            if chain_type not in ChainType.values:
                 raise APIError(ErrorCode.INVALID_CHAIN)
         elif chain_code:
             try:
@@ -69,5 +68,11 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
             raise APIError(ErrorCode.INVALID_CHAIN)
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
-        deposit_address = DepositAddress.get_address(chain=chain, customer=customer)
+        if chain_type:
+            deposit_address = DepositAddress.get_address_by_chain_type(
+                chain_type=chain_type,
+                customer=customer,
+            )
+        else:
+            deposit_address = DepositAddress.get_address(chain=chain, customer=customer)
         return Response({"deposit_address": deposit_address})
