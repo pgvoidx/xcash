@@ -54,6 +54,7 @@ class ChainAdmin(ModelAdmin):
                     "chain_id",
                     "base_transfer_gas",
                     "erc20_transfer_gas",
+                    "evm_log_max_block_range",
                 )
             },
         ),

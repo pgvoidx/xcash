@@ -36,6 +36,32 @@ class EvmScannerRpcClient:
         if from_block > to_block or not token_addresses:
             return []
 
+        max_block_range = max(1, int(getattr(self.chain, "evm_log_max_block_range", 10)))
+        logs: list[dict[str, Any]] = []
+        chunk_from = from_block
+
+        while chunk_from <= to_block:
+            chunk_to = min(to_block, chunk_from + max_block_range - 1)
+            logs.extend(
+                self._get_transfer_logs_chunk(
+                    from_block=chunk_from,
+                    to_block=chunk_to,
+                    token_addresses=token_addresses,
+                    topic0=topic0,
+                )
+            )
+            chunk_from = chunk_to + 1
+
+        return logs
+
+    def _get_transfer_logs_chunk(
+        self,
+        *,
+        from_block: int,
+        to_block: int,
+        token_addresses: list[str],
+        topic0: str,
+    ) -> list[dict[str, Any]]:
         try:
             return list(
                 self.chain.w3.eth.get_logs(  # noqa: SLF001

@@ -76,6 +76,11 @@ class Chain(models.Model):
         default=100_000,
         help_text=_("ERC-20 代币 transfer 调用的 gas 上限"),
     )
+    evm_log_max_block_range = models.PositiveIntegerField(
+        _("EVM 单次日志请求最大区块数"),
+        default=10,
+        help_text=_("EVM 扫描器单次 eth_getLogs 请求允许覆盖的最大区块数。"),
+    )
     chain_id = models.PositiveIntegerField(
         _("Chain ID"),
         unique=True,
