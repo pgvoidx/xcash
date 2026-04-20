@@ -515,6 +515,15 @@ class ProjectAdmin(ModelAdmin):
                 ),
             },
         ),
+        (
+            _("自动归集"),
+            {
+                "fields": (
+                    "gather_worth",
+                    "gather_period",
+                ),
+            },
+        ),
         ("安全", {"fields": ("ip_white_list",)}),
     )
     edit_fieldsets = (
@@ -533,6 +542,15 @@ class ProjectAdmin(ModelAdmin):
                     "appid",
                     "wallet",
                     "fast_confirm_threshold",
+                ),
+            },
+        ),
+        (
+            _("自动归集"),
+            {
+                "fields": (
+                    "gather_worth",
+                    "gather_period",
                 ),
             },
         ),
