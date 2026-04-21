@@ -394,14 +394,18 @@ def ensure_local_evm_usdt_contract_address(
 
 
 def ensure_public_chains(*, using: str = "default", stdout=None) -> None:
-    """初始化生产环境默认主网配置。"""
+    """初始化生产环境默认主网配置。
+
+    用 get_or_create：链不存在时才建骨架；已存在则原样保留。
+    避免每次部署 migrate 触发 post_migrate 时把管理员配置的 rpc / active 覆盖掉。
+    """
     chain_manager = Chain.objects.using(using)
 
     for chain_config in PRODUCTION_MAINNET_CHAINS:
         native_coin = Crypto.objects.using(using).get(
             symbol=chain_config["native_symbol"]
         )
-        chain_manager.update_or_create(
+        chain_manager.get_or_create(
             code=chain_config["code"],
             defaults={
                 "name": chain_config["name"],
@@ -409,7 +413,7 @@ def ensure_public_chains(*, using: str = "default", stdout=None) -> None:
                 "native_coin": native_coin,
                 "chain_id": chain_config["chain_id"],
                 "is_poa": chain_config["is_poa"],
-                # 生产默认主数据只创建骨架配置；待管理员补完 RPC 后再手动启用。
+                # 骨架初始化：RPC 留空、未激活，由管理员补完 RPC 后手动 active=True。
                 "rpc": "",
                 "active": False,
             },
