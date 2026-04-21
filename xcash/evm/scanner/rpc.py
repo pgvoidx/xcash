@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import Any
 
+from web3 import Web3
+from web3.exceptions import ExtraDataLengthError
+from web3.middleware import ExtraDataToPOAMiddleware
+
 if TYPE_CHECKING:
     from chains.models import Chain
 
@@ -80,9 +84,10 @@ class EvmScannerRpcClient:
 
     def get_block_timestamp(self, *, block_number: int) -> int:
         try:
-            block = self.chain.w3.eth.get_block(
-                block_number, full_transactions=False
-            )  # noqa: SLF001
+            block = self._get_block_with_poa_retry(
+                block_number=block_number,
+                full_transactions=False,
+            )
             return int(block["timestamp"])
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
@@ -92,9 +97,10 @@ class EvmScannerRpcClient:
     def get_full_block(self, *, block_number: int) -> dict[str, Any]:
         try:
             return dict(
-                self.chain.w3.eth.get_block(
-                    block_number, full_transactions=True
-                )  # noqa: SLF001
+                self._get_block_with_poa_retry(
+                    block_number=block_number,
+                    full_transactions=True,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
@@ -113,3 +119,32 @@ class EvmScannerRpcClient:
             return None
         status = receipt.get("status")
         return int(status) if status in (0, 1) else None
+
+    def _get_block_with_poa_retry(
+        self,
+        *,
+        block_number: int,
+        full_transactions: bool,
+    ) -> Any:
+        try:
+            return self.chain.w3.eth.get_block(
+                block_number,
+                full_transactions=full_transactions,
+            )  # noqa: SLF001
+        except ExtraDataLengthError:
+            self._mark_chain_as_poa()
+            retry_w3 = self._build_poa_retry_w3()
+            return retry_w3.eth.get_block(
+                block_number,
+                full_transactions=full_transactions,
+            )
+
+    def _build_poa_retry_w3(self) -> Web3:
+        w3 = Web3(Web3.HTTPProvider(self.chain.rpc, request_kwargs={"timeout": 8}))
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        self.chain.__dict__["w3"] = w3
+        return w3
+
+    def _mark_chain_as_poa(self) -> None:
+        self.chain.__class__.objects.filter(pk=self.chain.pk).update(is_poa=True)
+        self.chain.is_poa = True

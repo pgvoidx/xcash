@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.test import TestCase
 from web3 import Web3
+from web3.exceptions import ExtraDataLengthError
 
 from chains.models import Chain
 from chains.models import ChainType
@@ -60,3 +62,68 @@ class EvmScannerRpcClientTests(TestCase):
 
         self.assertEqual(requested_ranges, [(100, 109), (110, 119), (120, 124)])
         self.assertEqual(len(logs), 3)
+
+    @patch("evm.scanner.rpc.EvmScannerRpcClient._build_poa_retry_w3")
+    def test_get_block_timestamp_retries_with_poa_when_extradata_is_too_long(
+        self,
+        build_poa_retry_w3_mock,
+    ):
+        # BSC 等 POA 链若因 is_poa 配置失真未注入 middleware，应能自动重试并自愈。
+        self.chain.is_poa = False
+        failing_w3 = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_block=Mock(
+                    side_effect=ExtraDataLengthError(
+                        "poa extraData too long",
+                    )
+                )
+            )
+        )
+        retry_w3 = SimpleNamespace(
+            eth=SimpleNamespace(get_block=Mock(return_value={"timestamp": 1_776_734_136}))
+        )
+        self.chain.__dict__["w3"] = failing_w3
+        build_poa_retry_w3_mock.return_value = retry_w3
+
+        timestamp = EvmScannerRpcClient(chain=self.chain).get_block_timestamp(
+            block_number=93_739_122
+        )
+
+        self.assertEqual(timestamp, 1_776_734_136)
+        self.chain.refresh_from_db()
+        self.assertTrue(self.chain.is_poa)
+        build_poa_retry_w3_mock.assert_called_once()
+
+    @patch("evm.scanner.rpc.EvmScannerRpcClient._build_poa_retry_w3")
+    def test_get_full_block_retries_with_poa_when_extradata_is_too_long(
+        self,
+        build_poa_retry_w3_mock,
+    ):
+        self.chain.is_poa = False
+        failing_w3 = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_block=Mock(
+                    side_effect=ExtraDataLengthError(
+                        "poa extraData too long",
+                    )
+                )
+            )
+        )
+        retry_w3 = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_block=Mock(
+                    return_value={"number": 93_739_122, "transactions": []}
+                )
+            )
+        )
+        self.chain.__dict__["w3"] = failing_w3
+        build_poa_retry_w3_mock.return_value = retry_w3
+
+        block = EvmScannerRpcClient(chain=self.chain).get_full_block(
+            block_number=93_739_122
+        )
+
+        self.assertEqual(block["number"], 93_739_122)
+        self.chain.refresh_from_db()
+        self.assertTrue(self.chain.is_poa)
+        build_poa_retry_w3_mock.assert_called_once()
