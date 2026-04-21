@@ -105,6 +105,11 @@ services:
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      # 挂载 docker.sock 会让 Traefik 看到同机所有容器的 labels（含其他 compose 项目，
+      # 例如同机的 xcash-saas）。不加约束的话，邻居若写出无 Host 限制的 PathPrefix 路由
+      # （已真实发生过 saas 的 PathPrefix(`/static`) 抢走 gateway.xca.sh/static/*），
+      # 会直接抢走本项目流量。限定只处理本 compose 项目的容器。
+      - --providers.docker.constraints=Label(`com.docker.compose.project`,`xcash`)
       - --entrypoints.web.address=:80
     ports:
       - "${LISTEN_TO}:6688:80"
