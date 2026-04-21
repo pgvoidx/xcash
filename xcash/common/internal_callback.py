@@ -94,7 +94,7 @@ def _deliver_internal_callback(
         logger.warning(
             "internal_callback_failed",
             url=url,
-            event=event,
+            callback_event=event,
             appid=appid,
             sys_no=sys_no,
             error=str(exc),
