@@ -34,9 +34,10 @@ REDIS_URL = env.str(
 # ------------------------------------------------------------------------------
 INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
 # 只填 SaaS 的 scheme+host，/callbacks/xcash 路径由 internal_callback 自己拼
-# 同机部署约定：SaaS 的 traefik 容器名固定为 xcash_saas_traefik，双方通过 xcash_public 网络按容器名互通。
+# 同机部署约定：SaaS 的 traefik 在 xcash_public 上暴露 xcash-saas-traefik 这个 DNS 别名，双方按此别名互通。
+# 不用容器原名 xcash_saas_traefik，下划线违反 RFC 1034/1035，Django HTTP_HOST 校验会拒。
 # 空串 = 关闭回调推送
-SAAS_CALLBACK_URL = env.str("SAAS_CALLBACK_URL", default="http://xcash_saas_traefik")
+SAAS_CALLBACK_URL = env.str("SAAS_CALLBACK_URL", default="http://xcash-saas-traefik")
 
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
 # CORS 默认关闭，由各环境配置显式开启或配置白名单。
