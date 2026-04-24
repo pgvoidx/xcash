@@ -100,4 +100,7 @@ def _deliver_internal_callback(
             error=str(exc),
             retry=self.request.retries,
         )
+        # DEBUG 环境不做指数退避重试，只通知一次
+        if settings.DEBUG:
+            return
         raise self.retry(countdown=_retry_countdown(self.request.retries), exc=exc)
