@@ -441,6 +441,50 @@ class EvmScanBlocksForReconcileTests(TestCase):
             1,
         )
 
+    @patch(
+        "evm.scanner.service.EvmErc20TransferScanner.scan_range_without_cursor",
+    )
+    @patch(
+        "evm.scanner.service.EvmNativeDirectScanner.scan_range_without_cursor",
+    )
+    def test_reconcile_sparse_blocks_scans_contiguous_segments(
+        self,
+        native_scan_mock,
+        erc20_scan_mock,
+    ):
+        # 多个 stale 任务命中相距很远的块时，兜底只能扫命中的连续块段，
+        # 不能扩成 [min..max] 巨大区间拖垮 RPC。
+        from evm.scanner.service import EvmChainScannerService
+
+        native_scan_mock.side_effect = [(2, 1), (2, 1), (1, 1)]
+        erc20_scan_mock.side_effect = [
+            ([object(), object()], 1),
+            ([object(), object()], 1),
+            ([object()], 1),
+        ]
+
+        result = EvmChainScannerService.scan_blocks_for_reconcile(
+            chain=self.chain,
+            block_numbers={10, 11, 500, 501, 900},
+        )
+
+        native_ranges = [
+            (call.kwargs["from_block"], call.kwargs["to_block"])
+            for call in native_scan_mock.call_args_list
+        ]
+        erc20_ranges = [
+            (call.kwargs["from_block"], call.kwargs["to_block"])
+            for call in erc20_scan_mock.call_args_list
+        ]
+        self.assertEqual(native_ranges, [(10, 11), (500, 501), (900, 900)])
+        self.assertEqual(erc20_ranges, [(10, 11), (500, 501), (900, 900)])
+        self.assertEqual(result.from_block, 10)
+        self.assertEqual(result.to_block, 900)
+        self.assertEqual(result.observed_native, 5)
+        self.assertEqual(result.observed_erc20, 5)
+        self.assertEqual(result.created_native, 3)
+        self.assertEqual(result.created_erc20, 3)
+
 
 def Crypto_create(name: str, symbol: str, coingecko_id: str):
     """惰性引用 Crypto，避免模块导入阶段强依赖 currencies。

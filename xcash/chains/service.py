@@ -129,6 +129,7 @@ class ObservedTransferPayload:
     amount: Decimal
     timestamp: int
     occurred_at: datetime
+    block_hash: str | None = None
     source: str = "observer"
 
 
@@ -175,6 +176,7 @@ class TransferService:
         return {
             "chain": observed.chain,
             "block": observed.block,
+            "block_hash": observed.block_hash,
             "hash": observed.tx_hash,
             "event_id": observed.event_id,
             "from_address": observed.from_address,
@@ -224,6 +226,9 @@ class TransferService:
         if existing.block != observed.block:
             existing.block = observed.block
             update_fields.append("block")
+        if observed.block_hash and existing.block_hash != observed.block_hash:
+            existing.block_hash = observed.block_hash
+            update_fields.append("block_hash")
         if existing.timestamp != observed.timestamp:
             existing.timestamp = observed.timestamp
             update_fields.append("timestamp")

@@ -1,6 +1,7 @@
 from celery import shared_task
 
 from chains.adapters import AdapterFactory
+from chains.adapters import TxCheckResult
 from chains.adapters import TxCheckStatus
 from chains.models import Chain
 from chains.models import ConfirmMode
@@ -43,13 +44,20 @@ def confirm_transfer(self, pk):
         return
 
     adapter = AdapterFactory.get_adapter(transfer.chain.type)
-    result = adapter.tx_result(chain=transfer.chain, tx_hash=transfer.hash)
+    raw_result = adapter.tx_result(chain=transfer.chain, tx_hash=transfer.hash)
 
-    if isinstance(result, Exception):
+    if isinstance(raw_result, Exception):
         # 指数退避：8s → 16s → 32s → 64s → 128s，避免节点抖动时密集重试。
         countdown = 8 * (2**self.request.retries)
-        raise self.retry(exc=result, countdown=countdown)
+        raise self.retry(exc=raw_result, countdown=countdown)
+    result_meta = raw_result if isinstance(raw_result, TxCheckResult) else None
+    result = result_meta.status if result_meta is not None else raw_result
     if result == TxCheckStatus.CONFIRMED:
+        if _refresh_transfer_chain_position_from_receipt(
+            transfer=transfer,
+            result=result_meta,
+        ):
+            return
         transfer.confirm()
     elif result == TxCheckStatus.CONFIRMING:
         if self.request.retries >= self.max_retries:
@@ -66,6 +74,31 @@ def confirm_transfer(self, pk):
         raise RuntimeError(
             "失败交易不应存在 OnchainTransfer 记录；请检查扫描器与内部任务协调器语义"
         )
+
+
+def _refresh_transfer_chain_position_from_receipt(
+    *,
+    transfer: OnchainTransfer,
+    result: TxCheckResult | None,
+) -> bool:
+    """receipt 的块位置变化时刷新转账，并重新等待确认窗口。
+
+    reorg 后同一 tx_hash 可能被重新打包到不同块；若继续沿用旧 block 计算确认数，
+    FULL 确认会被提前放行。block_hash 能覆盖“同一高度但不同块”的场景。
+    """
+    if result is None:
+        return False
+
+    updates: dict[str, object] = {}
+    if result.block_number is not None and int(result.block_number) != transfer.block:
+        updates["block"] = int(result.block_number)
+    if result.block_hash and result.block_hash != transfer.block_hash:
+        updates["block_hash"] = result.block_hash
+    if not updates:
+        return False
+
+    OnchainTransfer.objects.filter(pk=transfer.pk).update(**updates)
+    return True
 
 
 @shared_task(ignore_result=True)

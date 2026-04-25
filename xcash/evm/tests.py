@@ -2615,6 +2615,82 @@ class EvmTaskQueueTests(TestCase):
         self.assertNotIn(collection_task.pk, picked_pks)
 
     @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_ignores_pending_gas_recharge_on_other_chain(self, delay_mock):
+        # DepositAddress 按 chain_type 复用 EVM 地址；其它 EVM 链的补 gas 任务
+        # 不能阻塞当前链同地址的归集任务。
+        from deposits.models import DepositAddress
+        from deposits.models import GasRecharge
+        from projects.models import Project
+        from users.models import Customer
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        other_native = Crypto.objects.create(
+            name="Ethereum Queue Other",
+            symbol="ETHQO",
+            coingecko_id="ethereum-queue-other",
+        )
+        other_chain = Chain.objects.create(
+            code="ethq-other",
+            name="Ethereum Queue Other",
+            type=ChainType.EVM,
+            chain_id=2,
+            rpc="http://ethq-other.local",
+            native_coin=other_native,
+            active=True,
+        )
+        project = Project.objects.create(
+            name="dispatch-cross-chain-recharge-project",
+            wallet=self.wallet,
+            webhook="https://example.com/webhook",
+        )
+        customer = Customer.objects.create(
+            project=project, uid="dispatch-cross-chain-recharge"
+        )
+        deposit_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=1,
+            address_index=20,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000004e1"
+            ),
+        )
+        deposit_address_record = DepositAddress.objects.create(
+            customer=customer,
+            chain_type=ChainType.EVM,
+            address=deposit_addr,
+        )
+        collection_task = self._create_evm_task(
+            tx_hash="0x" + "ab" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            address=deposit_addr,
+        )
+        EvmBroadcastTask.objects.filter(pk=collection_task.pk).update(
+            created_at=timezone.now() - timedelta(seconds=8),
+            last_attempt_at=None,
+        )
+        other_chain_recharge = BroadcastTask.objects.create(
+            chain=other_chain,
+            address=self.addr,
+            transfer_type=TransferType.GasRecharge,
+            crypto=other_native,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        GasRecharge.objects.create(
+            deposit_address=deposit_address_record,
+            broadcast_task=other_chain_recharge,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        picked_pks = {call.args[0] for call in delay_mock.call_args_list}
+        self.assertIn(collection_task.pk, picked_pks)
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
     def test_dispatch_resumes_task_after_gas_recharge_recharged_at_written(
         self, delay_mock
     ):
@@ -3350,6 +3426,24 @@ class EvmErc20ScannerTests(TestCase):
         reconcile_chain_mock,
     ):
         # Celery 入口应只负责链级调度，不再混入具体日志解析逻辑。
+        from evm.tasks import scan_evm_chain
+
+        scan_evm_chain(self.chain.pk)
+
+        scan_chain_mock.assert_called_once()
+        reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.InternalEvmTaskCoordinator.reconcile_chain")
+    @patch(
+        "evm.tasks.EvmChainScannerService.scan_chain",
+        side_effect=EvmScannerRpcError("rpc timeout"),
+    )
+    def test_scan_evm_chain_runs_coordinator_when_scanner_rpc_fails(
+        self,
+        scan_chain_mock,
+        reconcile_chain_mock,
+    ):
+        # 主扫描 RPC 异常不能阻断内部 PENDING_CHAIN 任务的超时收口。
         from evm.tasks import scan_evm_chain
 
         scan_evm_chain(self.chain.pk)

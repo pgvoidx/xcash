@@ -228,6 +228,7 @@ class EvmNativeDirectScanner:
 
         for block_number in range(from_block, to_block + 1):
             block: dict[str, Any] = rpc_client.get_full_block(block_number=block_number)
+            block_hash = cls._normalize_hash(block.get("hash"))
             timestamp = int(block["timestamp"])
             occurred_at = datetime.fromtimestamp(
                 timestamp,
@@ -263,6 +264,7 @@ class EvmNativeDirectScanner:
                         amount=parsed["amount"],
                         timestamp=timestamp,
                         occurred_at=occurred_at,
+                        block_hash=block_hash,
                         source="evm-scan",
                     )
                 )
@@ -317,6 +319,13 @@ class EvmNativeDirectScanner:
         else:
             hex_value = str(value)
         return hex_value[2:] if hex_value.startswith("0x") else hex_value
+
+    @staticmethod
+    def _normalize_hash(value: object | None) -> str | None:
+        if value is None:
+            return None
+        raw_hex = EvmNativeDirectScanner._to_hex(value)
+        return f"0x{raw_hex.lower()}" if raw_hex else None
 
     @staticmethod
     def _mark_cursor_idle(*, cursor: EvmScanCursor, latest_block: int) -> None:

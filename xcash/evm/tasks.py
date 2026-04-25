@@ -129,6 +129,7 @@ def dispatch_due_evm_broadcast_tasks() -> None:
     # 已 FINALIZED+FAILED 的 recharge 不再阻塞 dispatch，避免死锁。
     pending_recharge_subquery = GasRecharge.objects.filter(
         deposit_address__address_id=OuterRef("address_id"),
+        broadcast_task__chain_id=OuterRef("chain_id"),
         recharged_at__isnull=True,
         broadcast_task__stage__in=(
             BroadcastTaskStage.QUEUED,
@@ -168,14 +169,16 @@ def scan_evm_chain(chain_pk: int) -> None:
     if not chain.active:
         return
 
+    summary = None
     try:
         summary = EvmChainScannerService.scan_chain(chain=chain)
     except EvmScannerRpcError:
         # RPC 失败已在游标层记录，任务层只保留简洁日志，避免重复堆叠异常噪音。
         logger.warning("EVM 自扫描 RPC 失败", chain=chain.code)
-        return
 
     InternalEvmTaskCoordinator.reconcile_chain(chain=chain)
+    if summary is None:
+        return
 
     logger.info(
         "EVM 自扫描完成",

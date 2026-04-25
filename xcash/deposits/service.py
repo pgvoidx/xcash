@@ -77,6 +77,7 @@ class GasRechargeService:
         has_pending_recharge = GasRecharge.objects.filter(
             deposit_address=deposit_address,
             recharged_at__isnull=True,
+            broadcast_task__chain=chain,
             broadcast_task__stage=BroadcastTaskStage.QUEUED,
             broadcast_task__result=BroadcastTaskResult.UNKNOWN,
         ).exists()

@@ -13,6 +13,8 @@ from evm.scanner.native import EvmNativeScanResult
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.watchers import load_watch_set
 
+RECONCILE_SCAN_MAX_BLOCK_SPAN = 64
+
 
 @dataclass(frozen=True)
 class EvmScanSummary:
@@ -39,6 +41,33 @@ class EvmReconcileScanResult:
 
 class EvmChainScannerService:
     """统一编排一条 EVM 链上的自扫描流程。"""
+
+    @staticmethod
+    def _iter_reconcile_block_ranges(
+        block_numbers: set[int],
+        *,
+        max_span: int = RECONCILE_SCAN_MAX_BLOCK_SPAN,
+    ):
+        """把命中块拆成连续且限宽的扫描窗口，避免稀疏块拉成长区间。"""
+        if max_span <= 0:
+            raise ValueError("max_span 必须大于 0")
+
+        sorted_blocks = sorted(set(block_numbers))
+        if not sorted_blocks:
+            return
+
+        start = end = sorted_blocks[0]
+        for block_number in sorted_blocks[1:]:
+            is_contiguous = block_number == end + 1
+            exceeds_span = block_number - start + 1 > max_span
+            if is_contiguous and not exceeds_span:
+                end = block_number
+                continue
+
+            yield start, end
+            start = end = block_number
+
+        yield start, end
 
     @staticmethod
     def _is_enabled(*, chain: Chain, scanner_type: EvmScanCursorType) -> bool:
@@ -105,8 +134,7 @@ class EvmChainScannerService:
     ) -> EvmReconcileScanResult:
         """对指定块集合执行一次兜底复扫，不推进任何游标。
 
-        - 合并为 [min..max] 连续区间，利用 native 逐块扫 / ERC20 logFilter 的原生能力，
-          比按块分别调用更省 RPC 调用。
+        - 按连续块段和最大跨度拆分窗口，避免稀疏块被扩成巨大 [min..max] 区间。
         - 复用 watch_set + OnchainTransfer 创建 + on_commit 派发 process 的既有管线，
           (chain, hash, event_id) 唯一约束天然保证复扫幂等。
         - 禁止读写 EvmScanCursor；主扫描负责游标管理，兜底只产生观测副作用。
@@ -131,32 +159,44 @@ class EvmChainScannerService:
         observed_native, created_native = 0, 0
         observed_erc20, created_erc20 = 0, 0
 
-        if cls._is_enabled(
+        native_enabled = cls._is_enabled(
             chain=chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        )
+        erc20_enabled = cls._is_enabled(
+            chain=chain,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
+        )
+
+        for range_from_block, range_to_block in cls._iter_reconcile_block_ranges(
+            block_numbers
         ):
-            observed_native, created_native = (
-                EvmNativeDirectScanner.scan_range_without_cursor(
+            if native_enabled:
+                range_observed_native, range_created_native = (
+                    EvmNativeDirectScanner.scan_range_without_cursor(
+                        chain=chain,
+                        rpc_client=rpc_client,
+                        watch_set=watch_set,
+                        from_block=range_from_block,
+                        to_block=range_to_block,
+                    )
+                )
+                observed_native += range_observed_native
+                created_native += range_created_native
+
+            if not erc20_enabled:
+                continue
+            logs, range_created_erc20 = (
+                EvmErc20TransferScanner.scan_range_without_cursor(
                     chain=chain,
                     rpc_client=rpc_client,
                     watch_set=watch_set,
-                    from_block=from_block,
-                    to_block=to_block,
+                    from_block=range_from_block,
+                    to_block=range_to_block,
                 )
             )
-
-        if cls._is_enabled(
-            chain=chain,
-            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
-        ):
-            logs, created_erc20 = EvmErc20TransferScanner.scan_range_without_cursor(
-                chain=chain,
-                rpc_client=rpc_client,
-                watch_set=watch_set,
-                from_block=from_block,
-                to_block=to_block,
-            )
-            observed_erc20 = len(logs)
+            observed_erc20 += len(logs)
+            created_erc20 += range_created_erc20
 
         return EvmReconcileScanResult(
             from_block=from_block,

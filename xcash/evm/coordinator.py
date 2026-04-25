@@ -35,6 +35,13 @@ def _to_hex(value: object) -> str:
     return hex_value.removeprefix("0x")
 
 
+def _normalize_hash(value: object | None) -> str | None:
+    if value is None:
+        return None
+    raw_hex = _to_hex(value)
+    return f"0x{raw_hex.lower()}" if raw_hex else None
+
+
 def _same_evm_address(left: str | None, right: str | None) -> bool:
     if not left or not right:
         return False
@@ -288,6 +295,7 @@ class InternalEvmTaskCoordinator:
             amount=amount,
             timestamp=timestamp,
             occurred_at=occurred_at,
+            block_hash=_normalize_hash(receipt.get("blockHash")),
             source="evm-coordinator",
         )
         TransferService.create_observed_transfer(observed=observed)

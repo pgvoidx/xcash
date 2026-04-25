@@ -6,6 +6,7 @@ from web3.exceptions import TransactionNotFound
 from web3.types import HexBytes
 
 from chains.adapters import AdapterInterface
+from chains.adapters import TxCheckResult
 from chains.adapters import TxCheckStatus
 from chains.models import Chain
 from chains.types import AddressStr
@@ -65,7 +66,9 @@ class EvmAdapter(AdapterInterface):
         return int(contract.functions.balanceOf(checksum_address).call())
 
     @classmethod
-    def tx_result(cls, chain: Chain, tx_hash: str) -> TxCheckStatus | Exception:
+    def tx_result(
+        cls, chain: Chain, tx_hash: str
+    ) -> TxCheckStatus | TxCheckResult | Exception:
         """查询交易哈希的链上状态，返回交易检查结果或异常。"""
         try:
             receipt = chain.w3.eth.get_transaction_receipt(tx_hash)  # noqa: SLF001
@@ -81,12 +84,16 @@ class EvmAdapter(AdapterInterface):
             return TxCheckStatus.CONFIRMING
 
         status = receipt.get("status")
+        result_meta = {
+            "block_number": cls._receipt_block_number(receipt),
+            "block_hash": cls._receipt_block_hash(receipt),
+        }
         if status == 1:
-            return TxCheckStatus.CONFIRMED
+            return TxCheckResult(status=TxCheckStatus.CONFIRMED, **result_meta)
 
         if status == 0:
             # receipt 存在且明确执行失败，才可终局为 FAILED。
-            return TxCheckStatus.FAILED
+            return TxCheckResult(status=TxCheckStatus.FAILED, **result_meta)
 
         return RuntimeError("EVM receipt status missing or invalid")
 
@@ -94,6 +101,26 @@ class EvmAdapter(AdapterInterface):
     def _to_checksum(address: AddressStr | str) -> ChecksumAddress:
         """将地址统一转为 EIP-55 校验和格式。"""
         return web3.Web3.to_checksum_address(str(address))
+
+    @staticmethod
+    def _receipt_block_number(receipt: dict) -> int | None:
+        block_number = receipt.get("blockNumber")
+        if block_number is None:
+            return None
+        return int(block_number)
+
+    @staticmethod
+    def _receipt_block_hash(receipt: dict) -> str | None:
+        block_hash = receipt.get("blockHash")
+        if block_hash is None:
+            return None
+        if hasattr(block_hash, "hex"):
+            value = block_hash.hex()
+        else:
+            value = str(block_hash)
+        if not value:
+            return None
+        return value.lower() if value.startswith("0x") else f"0x{value.lower()}"
 
     @classmethod
     def _is_contract_code_empty(cls, chain: Chain, address: AddressStr) -> bool:

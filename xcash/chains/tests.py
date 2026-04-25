@@ -808,6 +808,75 @@ class TransferConfirmDispatchTests(TestCase):
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
     @patch("chains.tasks.AdapterFactory.get_adapter")
+    def test_confirm_transfer_refreshes_block_when_receipt_moves_higher(
+        self, get_adapter_mock, _cache_add_mock, _cache_delete_mock
+    ):
+        from chains.adapters import TxCheckResult
+        from chains.adapters import TxCheckStatus
+        from chains.tasks import confirm_transfer
+        from withdrawals.models import WithdrawalStatus
+
+        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+            tx_hash="0x" + "b" * 64
+        )
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckResult(
+            status=TxCheckStatus.CONFIRMED,
+            block_number=120,
+            block_hash="0x" + "12" * 32,
+        )
+        get_adapter_mock.return_value = adapter
+
+        confirm_transfer.run(transfer.pk)
+
+        transfer.refresh_from_db()
+        withdrawal.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        self.assertEqual(transfer.block, 120)
+        self.assertEqual(transfer.block_hash, "0x" + "12" * 32)
+        self.assertEqual(transfer.status, TransferStatus.CONFIRMING)
+        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
+        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+
+    @patch("common.decorators.cache.delete", return_value=True)
+    @patch("common.decorators.cache.add", return_value=True)
+    @patch("chains.tasks.AdapterFactory.get_adapter")
+    def test_confirm_transfer_refreshes_block_hash_when_receipt_hash_changes(
+        self, get_adapter_mock, _cache_add_mock, _cache_delete_mock
+    ):
+        from chains.adapters import TxCheckResult
+        from chains.adapters import TxCheckStatus
+        from chains.tasks import confirm_transfer
+        from withdrawals.models import WithdrawalStatus
+
+        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+            tx_hash="0x" + "c" * 64
+        )
+        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+            block_hash="0x" + "11" * 32
+        )
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckResult(
+            status=TxCheckStatus.CONFIRMED,
+            block_number=transfer.block,
+            block_hash="0x" + "22" * 32,
+        )
+        get_adapter_mock.return_value = adapter
+
+        confirm_transfer.run(transfer.pk)
+
+        transfer.refresh_from_db()
+        withdrawal.refresh_from_db()
+        broadcast_task.refresh_from_db()
+        self.assertEqual(transfer.block, 100)
+        self.assertEqual(transfer.block_hash, "0x" + "22" * 32)
+        self.assertEqual(transfer.status, TransferStatus.CONFIRMING)
+        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
+        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+
+    @patch("common.decorators.cache.delete", return_value=True)
+    @patch("common.decorators.cache.add", return_value=True)
+    @patch("chains.tasks.AdapterFactory.get_adapter")
     def test_confirm_transfer_retries_confirming_result_before_drop(
         self, get_adapter_mock, _cache_add_mock, _cache_delete_mock
     ):

@@ -929,6 +929,90 @@ class GasRechargeServiceIdempotencyDbTests(TestCase):
         schedule_mock.assert_not_called()
         get_address_mock.assert_not_called()
 
+    @patch("chains.models.Wallet.get_address")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    def test_request_recharge_ignores_pending_record_on_other_chain(
+        self, schedule_mock, get_address_mock,
+    ):
+        from deposits.service import GasRechargeService
+
+        project = Project.objects.create(
+            name="DemoIdemChain",
+            wallet=Wallet.objects.create(),
+        )
+        customer = Customer.objects.create(project=project, uid="customer-idem-chain")
+        native_a = Crypto.objects.create(
+            name="Ethereum Idem Chain A",
+            symbol="ETHICA",
+            coingecko_id="ethereum-idem-chain-a",
+        )
+        native_b = Crypto.objects.create(
+            name="Ethereum Idem Chain B",
+            symbol="ETHICB",
+            coingecko_id="ethereum-idem-chain-b",
+        )
+        chain_a = Chain.objects.create(
+            name="EthereumIdemChainA",
+            code="eth-idem-chain-a",
+            type=ChainType.EVM,
+            native_coin=native_a,
+            chain_id=401,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        chain_b = Chain.objects.create(
+            name="EthereumIdemChainB",
+            code="eth-idem-chain-b",
+            type=ChainType.EVM,
+            native_coin=native_b,
+            chain_id=402,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000191",
+        )
+        deposit_address = DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain_a.type,
+            address=addr,
+        )
+        other_chain_task = BroadcastTask.objects.create(
+            chain=chain_b,
+            address=addr,
+            transfer_type=TransferType.GasRecharge,
+            crypto=native_b,
+            amount=Decimal("1"),
+        )
+        GasRecharge.objects.create(
+            deposit_address=deposit_address,
+            broadcast_task=other_chain_task,
+        )
+        current_task = BroadcastTask.objects.create(
+            chain=chain_a,
+            address=addr,
+            transfer_type=TransferType.GasRecharge,
+            crypto=native_a,
+            amount=Decimal("1"),
+        )
+        schedule_mock.return_value = SimpleNamespace(base_task=current_task)
+
+        result = GasRechargeService.request_recharge(
+            deposit_address=deposit_address,
+            chain=chain_a,
+            erc20_gas_cost=100_000,
+        )
+
+        self.assertTrue(result)
+        schedule_mock.assert_called_once()
+        get_address_mock.assert_called_once()
+        self.assertEqual(GasRecharge.objects.count(), 2)
+
 
 class DepositTransferRematchTests(TestCase):
     @patch("deposits.service.WebhookService.create_event")

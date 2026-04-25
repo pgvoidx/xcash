@@ -33,6 +33,7 @@ class ParsedErc20Log(TypedDict):
     """描述一条已通过过滤的 ERC20 OnchainTransfer 日志。"""
 
     block_number: int
+    block_hash: str | None
     tx_hash: str
     event_id: str
     from_address: str
@@ -261,6 +262,7 @@ class EvmErc20TransferScanner:
                     timestamp,
                     tz=timezone.get_current_timezone(),
                 ),
+                block_hash=parsed["block_hash"],
                 source="evm-scan",
             )
             result = TransferService.create_observed_transfer(observed=observed)
@@ -312,6 +314,9 @@ class EvmErc20TransferScanner:
 
         parsed_log: ParsedErc20Log = {
             "block_number": int(log["blockNumber"]),
+            "block_hash": EvmErc20TransferScanner._normalize_hash(
+                log.get("blockHash")
+            ),
             # 统一补齐 0x 前缀，保持与现有 EVM OnchainTransfer.hash 存储语义一致。
             "tx_hash": f"0x{EvmErc20TransferScanner._to_hex(log['transactionHash']).lower()}",
             "event_id": f"erc20:{EvmErc20TransferScanner._parse_int(log.get('logIndex', 0))}",
@@ -340,6 +345,13 @@ class EvmErc20TransferScanner:
         else:
             hex_value = str(value)
         return hex_value[2:] if hex_value.startswith("0x") else hex_value
+
+    @staticmethod
+    def _normalize_hash(value: object | None) -> str | None:
+        if value is None:
+            return None
+        raw_hex = EvmErc20TransferScanner._to_hex(value)
+        return f"0x{raw_hex.lower()}" if raw_hex else None
 
     @staticmethod
     def _parse_int(raw_value: object) -> int:
