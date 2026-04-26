@@ -12,7 +12,9 @@ import httpx
 import structlog
 from django.conf import settings
 from django.core.cache import cache
-from django.core.exceptions import PermissionDenied
+
+from common.error_codes import ErrorCode
+from common.exceptions import APIError
 
 logger = structlog.get_logger()
 
@@ -33,7 +35,7 @@ def check_saas_permission(*, appid: str, action: str) -> None:
         action: 'deposit' / 'withdrawal' 等，对应 SaaS 返回的 enable_<action>
 
     Raises:
-        PermissionDenied: 该 tier 未开放该功能 / 用户已 frozen / SaaS 不可达且无缓存
+        APIError: 该 tier 未开放该功能 / 用户已 frozen / SaaS 不可达且无缓存
 
     Returns:
         None — 不抛异常即放行
@@ -42,14 +44,15 @@ def check_saas_permission(*, appid: str, action: str) -> None:
     if not settings.INTERNAL_API_TOKEN:
         return
 
-    cache_key = f"saas_permission:{appid}"
+    cache_key = f"saas:permission:{appid}"
     perm = cache.get(cache_key)
 
     if perm is None:
         try:
             perm = _fetch_from_saas(appid)
-            cache.set(cache_key, perm, CACHE_TTL)
+            # 先写 stale 缓存，再写主缓存（防崩溃中间状态）
             cache.set(f"{cache_key}:stale", perm, STALE_TTL)
+            cache.set(cache_key, perm, CACHE_TTL)
         except httpx.HTTPError as exc:
             # SaaS 不可达 → 用 stale 缓存兜底
             perm = cache.get(f"{cache_key}:stale")
@@ -58,17 +61,15 @@ def check_saas_permission(*, appid: str, action: str) -> None:
                     "saas_permission_unavailable",
                     appid=appid, action=action, error=str(exc),
                 )
-                raise PermissionDenied("permission service unavailable")
+                raise APIError(ErrorCode.PERMISSION_SERVICE_UNAVAILABLE)
             logger.info("saas_permission_stale_used", appid=appid)
 
     if perm.get("frozen"):
-        raise PermissionDenied("project is frozen")
+        raise APIError(ErrorCode.ACCOUNT_FROZEN)
 
     feature_key = f"enable_{action}"
     if not perm.get(feature_key, False):
-        raise PermissionDenied(
-            f"{action} is not enabled for current tier",
-        )
+        raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=action)
 
 
 def _fetch_from_saas(appid: str) -> dict:
@@ -83,4 +84,11 @@ def _fetch_from_saas(appid: str) -> dict:
             },
         )
         resp.raise_for_status()
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            # 非 JSON 响应（502 HTML 网关页等）→ 包成 HTTPError 让调用方按"SaaS 不可达"处理
+            raise httpx.HTTPError(f"non-JSON response: {exc}") from exc
+        if not isinstance(data, dict):
+            raise httpx.HTTPError(f"unexpected response type: {type(data).__name__}")
+        return data
