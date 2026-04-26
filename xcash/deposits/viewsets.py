@@ -12,6 +12,7 @@ from chains.capabilities import ChainProductCapabilityService
 from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from common.permission_check import check_saas_permission
 from common.throttles import DepositAddressThrottle
 from currencies.service import CryptoService
 from deposits.models import DepositAddress
@@ -44,6 +45,9 @@ class DepositViewSet(viewsets.GenericViewSet):
         project = Project.retrieve(appid=appid)
         if project is None:
             raise APIError(ErrorCode.INVALID_APPID)
+
+        # v2 SaaS 模式：校验该 tier 是否开放 deposit 功能
+        check_saas_permission(appid=appid, action="deposit")
 
         uid = request.GET.get("uid")
         chain_code = request.GET.get("chain")

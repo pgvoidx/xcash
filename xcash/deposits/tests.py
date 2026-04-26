@@ -42,6 +42,7 @@ from projects.models import RecipientAddressUsage
 from users.models import Customer
 from users.models import User
 from common.error_codes import ErrorCode
+from common.exceptions import APIError
 from deposits.viewsets import DepositViewSet
 
 
@@ -2121,6 +2122,12 @@ class CollectScheduleLifecycleTests(TestCase):
 
 
 class DepositAddressApiGuardTests(TestCase):
+    def setUp(self):
+        # 屏蔽 SaaS 权限回调，避免单测触发真实 HTTP 请求
+        patcher = patch("deposits.viewsets.check_saas_permission")
+        self.mock_check_saas = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_address_endpoint_rejects_bitcoin_chain_without_allocating_deposit_address(
         self,
     ):
@@ -2694,3 +2701,69 @@ class DepositCollectionAnvilTests(TestCase):
 
         # 3 轮 DepositCollection 各自独立
         self.assertEqual(len(set(collection_ids)), 3)
+
+
+class DepositAddressPermissionCheckTests(TestCase):
+    """v2 SaaS 模式：GET /deposits/address 调用 check_saas_permission(action='deposit')。"""
+
+    def setUp(self):
+        self.wallet = Wallet.objects.create()
+        self.project = Project.objects.create(
+            name="DepositPermCheckProject",
+            wallet=self.wallet,
+            ip_white_list="*",
+            webhook="https://example.com/webhook",
+        )
+        self.native = Crypto.objects.create(
+            name="Ethereum PermCheck Deposit",
+            symbol="ETHPCD",
+            coingecko_id="ethereum-permcheck-deposit",
+            decimals=18,
+        )
+        self.chain = Chain.objects.create(
+            name="Ethereum PermCheck Deposit",
+            code="eth-permcheck-deposit",
+            type=ChainType.EVM,
+            native_coin=self.native,
+            chain_id=9902,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        self.user = User.objects.create(username="deposit-permcheck-user")
+
+    def _make_request(self):
+        request = APIRequestFactory().get(
+            "/v1/deposits/address",
+            {"uid": "perm-user", "chain": self.chain.code, "crypto": self.native.symbol},
+            HTTP_XC_APPID=self.project.appid,
+        )
+        force_authenticate(request, user=self.user)
+        return request
+
+    @patch("deposits.viewsets.check_saas_permission")
+    def test_address_calls_permission_check_with_correct_args(self, mock_check):
+        """正常请求触发 check_saas_permission(appid, action='deposit')。"""
+        with patch("deposits.viewsets.DepositAddress.get_address", return_value="0xaddr"):
+            DepositViewSet.as_view({"get": "address"})(self._make_request())
+
+        mock_check.assert_called_once_with(appid=self.project.appid, action="deposit")
+
+    @patch("deposits.viewsets.check_saas_permission")
+    def test_address_returns_403_when_feature_not_enabled(self, mock_check):
+        """check_saas_permission 抛 APIError(FEATURE_NOT_ENABLED) 时返回 403。"""
+        mock_check.side_effect = APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="deposit")
+
+        response = DepositViewSet.as_view({"get": "address"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.FEATURE_NOT_ENABLED.code)
+
+    @patch("deposits.viewsets.check_saas_permission")
+    def test_address_returns_403_when_account_frozen(self, mock_check):
+        """账户冻结时，获取充币地址应返回 403。"""
+        mock_check.side_effect = APIError(ErrorCode.ACCOUNT_FROZEN)
+
+        response = DepositViewSet.as_view({"get": "address"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.ACCOUNT_FROZEN.code)
