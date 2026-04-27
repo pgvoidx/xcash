@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-
 from base64 import b32encode
 from base64 import b64encode
 from datetime import UTC
