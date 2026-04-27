@@ -82,7 +82,14 @@ def execute_stress_case(case_id: int) -> None:
 
 
 def _execute(case: InvoiceStressCase) -> None:
-    """InvoiceStressCase 执行核心流程。"""
+    """InvoiceStressCase 执行核心流程的 API 阶段（创建账单 + 选支付方式）。
+
+    完成后通过 Celery countdown=2 调度链上支付阶段，避免 worker 线程被
+    sleep 阻塞。等待 2 秒的目的：确保链上交易的区块时间戳（秒级精度）
+    晚于 Invoice 的 started_at，否则 try_match_invoice 的
+    invoice__started_at__lte=transfer.datetime 条件会因区块时间戳被
+    截断到同一秒的起点而匹配失败。
+    """
     # 阶段 1: 创建 Invoice
     resp = StressService.create_invoice(case)
     case.invoice_sys_no = resp["sys_no"]
@@ -115,33 +122,60 @@ def _execute(case: InvoiceStressCase) -> None:
         ]
     )
 
-    # 阶段 3: 链上支付
-    # 等待 2 秒，确保链上交易的区块时间戳（秒级精度）晚于 Invoice 的 started_at，
-    # 否则 try_match_invoice 的 invoice__started_at__lte=transfer.datetime 条件会因
-    # 区块时间戳被截断到同一秒的起点而匹配失败。
-    time.sleep(2)
-    case.status = InvoiceStressCaseStatus.PAYING
-    case.save(update_fields=["status"])
+    # 阶段 3: 链上支付 —— 拆为独立 task，countdown=2 保证区块时间戳晚于 started_at，
+    # 同时立即释放当前 worker 线程，避免 8 并发 worker 被 sleep 拖慢 30%。
+    execute_stress_case_payment.apply_async(args=[case.pk], countdown=2)
 
-    payment_result = _do_payment(case)
-    case.tx_hash = payment_result["tx_hash"]
-    case.payer_address = payment_result["payer_address"]
-    case.status = InvoiceStressCaseStatus.PAID
-    case.chain_paid_at = timezone.now()
-    case.save(
-        update_fields=[
-            "tx_hash",
-            "payer_address",
-            "status",
-            "chain_paid_at",
-        ]
-    )
 
-    # 派发超时检查任务（5 分钟后）
-    check_webhook_timeout.apply_async(
-        args=[case.pk],
-        eta=timezone.now() + timedelta(minutes=15),
-    )
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
+def execute_stress_case_payment(case_id: int) -> None:
+    """执行 InvoiceStressCase 的链上支付阶段（CREATED → PAYING → PAID）。
+
+    由 execute_stress_case 的 _execute 通过 countdown=2 调度，等价于原
+    `time.sleep(2)` 的语义但不占用 worker 线程。
+    """
+    try:
+        case = InvoiceStressCase.objects.select_related("stress_run__project").get(
+            pk=case_id
+        )
+    except InvoiceStressCase.DoesNotExist:
+        return
+
+    # 状态守卫：只有处于 CREATED 的 case 才允许进入链上支付阶段。
+    # 其他状态（重复派发、整轮超时已 SKIPPED、已 FAILED 等）直接幂等返回。
+    if case.status != InvoiceStressCaseStatus.CREATED:
+        return
+
+    try:
+        case.status = InvoiceStressCaseStatus.PAYING
+        case.save(update_fields=["status"])
+
+        payment_result = _do_payment(case)
+        case.tx_hash = payment_result["tx_hash"]
+        case.payer_address = payment_result["payer_address"]
+        case.status = InvoiceStressCaseStatus.PAID
+        case.chain_paid_at = timezone.now()
+        case.save(
+            update_fields=[
+                "tx_hash",
+                "payer_address",
+                "status",
+                "chain_paid_at",
+            ]
+        )
+
+        # 派发 webhook 超时检查任务（15 分钟后）—— 必须在 PAID 状态确立后。
+        check_webhook_timeout.apply_async(
+            args=[case.pk],
+            eta=timezone.now() + timedelta(minutes=15),
+        )
+    except Exception as exc:
+        logger.exception("stress.case_payment.failed", case_id=case.pk)
+        case.status = InvoiceStressCaseStatus.FAILED
+        case.error = str(exc)[:2000]
+        case.finished_at = timezone.now()
+        case.save(update_fields=["status", "error", "finished_at"])
+        StressService.on_case_finished(case)
 
 
 def _do_payment(case: InvoiceStressCase) -> dict[str, str]:
@@ -367,44 +401,79 @@ def execute_deposit_case(case_id: int) -> None:
 
 
 def _execute_deposit(case: DepositStressCase) -> None:
-    """DepositStressCase 执行核心流程。"""
+    """DepositStressCase 执行核心流程的 API 阶段（获取充值地址）。
+
+    完成后通过 Celery countdown=2 调度链上充值阶段，避免 worker 线程被
+    sleep 阻塞。等待 2 秒的目的：确保区块时间戳晚于充值地址创建时间。
+
+    注意：保持 case.status 为 CREATING，由 payment task 推进到 PAYING/PAID。
+    """
     # 阶段 1: 获取充值地址
     deposit_address = StressService.get_deposit_address(case)
     case.deposit_address = deposit_address
     case.api_done_at = timezone.now()
     case.save(update_fields=["deposit_address", "api_done_at"])
 
-    # 阶段 2: 模拟链上充值
-    # 等待 2 秒，确保区块时间戳晚于充值地址创建时间
-    time.sleep(2)
-    case.status = DepositStressCaseStatus.PAYING
-    case.save(update_fields=["status"])
+    # 阶段 2: 链上充值 —— 拆为独立 task，countdown=2 保证区块时间戳晚于地址创建时间，
+    # 同时立即释放 worker 线程。
+    execute_deposit_case_payment.apply_async(args=[case.pk], countdown=2)
 
-    payment_result = simulate_payment(
-        to_address=case.deposit_address,
-        chain_code=case.chain,
-        crypto_symbol=case.crypto,
-        amount=case.amount,
-        payment_ref=f"deposit-{case.pk}",
-    )
-    case.tx_hash = payment_result["tx_hash"]
-    case.payer_address = payment_result["payer_address"]
-    case.status = DepositStressCaseStatus.PAID
-    case.chain_paid_at = timezone.now()
-    case.save(
-        update_fields=[
-            "tx_hash",
-            "payer_address",
-            "status",
-            "chain_paid_at",
-        ]
-    )
 
-    # 派发超时检查任务（15 分钟后）
-    check_deposit_webhook_timeout.apply_async(
-        args=[case.pk],
-        eta=timezone.now() + timedelta(minutes=15),
-    )
+@shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
+def execute_deposit_case_payment(case_id: int) -> None:
+    """执行 DepositStressCase 的链上充值阶段（CREATING → PAYING → PAID）。
+
+    由 execute_deposit_case 的 _execute_deposit 通过 countdown=2 调度，等价于
+    原 `time.sleep(2)` 的语义但不占用 worker 线程。
+    """
+    try:
+        case = DepositStressCase.objects.select_related("stress_run__project").get(
+            pk=case_id
+        )
+    except DepositStressCase.DoesNotExist:
+        return
+
+    # 状态守卫：只有处于 CREATING 的 case 才允许进入链上充值阶段。
+    # _execute_deposit 完成阶段 1 后未改 status，故此处仍为 CREATING。
+    if case.status != DepositStressCaseStatus.CREATING:
+        return
+
+    try:
+        case.status = DepositStressCaseStatus.PAYING
+        case.save(update_fields=["status"])
+
+        payment_result = simulate_payment(
+            to_address=case.deposit_address,
+            chain_code=case.chain,
+            crypto_symbol=case.crypto,
+            amount=case.amount,
+            payment_ref=f"deposit-{case.pk}",
+        )
+        case.tx_hash = payment_result["tx_hash"]
+        case.payer_address = payment_result["payer_address"]
+        case.status = DepositStressCaseStatus.PAID
+        case.chain_paid_at = timezone.now()
+        case.save(
+            update_fields=[
+                "tx_hash",
+                "payer_address",
+                "status",
+                "chain_paid_at",
+            ]
+        )
+
+        # 派发 webhook 超时检查任务（15 分钟后）—— 必须在 PAID 状态确立后。
+        check_deposit_webhook_timeout.apply_async(
+            args=[case.pk],
+            eta=timezone.now() + timedelta(minutes=15),
+        )
+    except Exception as exc:
+        logger.exception("stress.deposit_case_payment.failed", case_id=case.pk)
+        case.status = DepositStressCaseStatus.FAILED
+        case.error = str(exc)[:2000]
+        case.finished_at = timezone.now()
+        case.save(update_fields=["status", "error", "finished_at"])
+        StressService.on_case_finished(case)
 
 
 @shared_task(ignore_result=True)

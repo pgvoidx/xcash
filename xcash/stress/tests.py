@@ -30,6 +30,9 @@ from stress.service import _build_deposit_cases
 from stress.service import StressService
 from stress.service import _setup_recipient_addresses
 from stress.tasks import _execute
+from stress.tasks import _execute_deposit
+from stress.tasks import execute_deposit_case_payment
+from stress.tasks import execute_stress_case_payment
 from stress.tasks import prepare_stress
 from stress.tasks import verify_deposit_collection
 from stress.views import _handle_webhook
@@ -240,7 +243,12 @@ class StressServiceTests(SimpleTestCase):
         self.assertEqual(len(cases), 1)
         self.assertEqual(cases[0].amount, Decimal("0.01234567"))
 
-    def test_execute_pays_without_scenario_field(self):
+    def test_execute_dispatches_payment_task_after_api_phase(self):
+        """_execute 完成 API 阶段后，状态停在 CREATED，并以 countdown=2 派发链上支付 task。
+
+        原本 _execute 内部 `time.sleep(2)` 会阻塞 worker 线程；改造后通过
+        Celery countdown 让出线程，这里验证调度参数与最终状态。
+        """
         case = SimpleNamespace(
             pk=1,
             status=InvoiceStressCaseStatus.CREATING,
@@ -269,27 +277,21 @@ class StressServiceTests(SimpleTestCase):
                     "pay_amount": "1.23",
                 },
             ),
-            patch("stress.tasks.time.sleep"),
+            patch("stress.tasks._do_payment") as do_payment_mock,
             patch(
-                "stress.tasks._do_payment",
-                return_value={
-                    "tx_hash": "0xabc123",
-                    "payer_address": "0x2000000000000000000000000000000000000002",
-                },
-            ) as do_payment_mock,
-            patch("stress.tasks.check_webhook_timeout.apply_async") as apply_async_mock,
+                "stress.tasks.execute_stress_case_payment.apply_async"
+            ) as payment_dispatch_mock,
+            patch("stress.tasks.check_webhook_timeout.apply_async") as webhook_dispatch_mock,
             patch("stress.tasks.StressService.on_case_finished"),
         ):
             _execute(case)
 
-        do_payment_mock.assert_called_once_with(case)
-        apply_async_mock.assert_called_once()
-        self.assertEqual(case.status, InvoiceStressCaseStatus.PAID)
-        self.assertEqual(case.tx_hash, "0xabc123")
-        self.assertEqual(
-            case.payer_address,
-            "0x2000000000000000000000000000000000000002",
-        )
+        # _execute 不再直接发起链上支付，而是把链上支付派发给独立 task
+        do_payment_mock.assert_not_called()
+        webhook_dispatch_mock.assert_not_called()
+        payment_dispatch_mock.assert_called_once_with(args=[case.pk], countdown=2)
+        # 状态停留在 CREATED，等待 payment task 推进
+        self.assertEqual(case.status, InvoiceStressCaseStatus.CREATED)
 
     @override_settings(STRESS_BTC_RPC_URL="http://xcash:xcash@localhost:18443")
     def test_bitcoin_stress_client_uses_ensured_wallet_client(self):
@@ -648,6 +650,241 @@ class StressServiceTests(SimpleTestCase):
             amount=Decimal("25"),
             decimals=6,
         )
+
+
+class StressPaymentTaskTests(SimpleTestCase):
+    """链上支付阶段拆 task 后的 4 项关键行为单测（Invoice 流程）。
+
+    新 execute_stress_case_payment task 接管原 _execute 的"阶段 3"，
+    需要验证：状态守卫、成功路径、失败路径，以及 _execute 调度参数。
+    """
+
+    databases = {"default"}
+
+    def _make_invoice_case(self, **overrides):
+        case = SimpleNamespace(
+            pk=42,
+            status=InvoiceStressCaseStatus.CREATED,
+            crypto="ETH",
+            chain="ethereum-local",
+            pay_address="0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+            pay_amount=Decimal("1.23"),
+            tx_hash="",
+            payer_address="",
+        )
+        for key, value in overrides.items():
+            setattr(case, key, value)
+        case.save = Mock()
+        return case
+
+    def _patch_invoice_get(self, case):
+        return patch(
+            "stress.tasks.InvoiceStressCase.objects.select_related",
+            return_value=SimpleNamespace(get=Mock(return_value=case)),
+        )
+
+    def test_execute_stress_case_payment_skips_when_status_not_created(self):
+        """非 CREATED 状态（重复派发、SKIPPED、FAILED 等）必须直接 noop。"""
+        case = self._make_invoice_case(status=InvoiceStressCaseStatus.SKIPPED)
+
+        with (
+            self._patch_invoice_get(case),
+            patch("stress.tasks.simulate_payment") as simulate_mock,
+            patch(
+                "stress.tasks.check_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+        ):
+            execute_stress_case_payment.run(case.pk)
+
+        simulate_mock.assert_not_called()
+        webhook_dispatch_mock.assert_not_called()
+        case.save.assert_not_called()
+        # 状态保持原样
+        self.assertEqual(case.status, InvoiceStressCaseStatus.SKIPPED)
+
+    def test_execute_stress_case_payment_success_path(self):
+        """CREATED → PAYING → PAID，写入 chain_paid_at / tx_hash / payer_address，
+        并派发 webhook 超时检查。"""
+        case = self._make_invoice_case()
+
+        with (
+            self._patch_invoice_get(case),
+            patch(
+                "stress.tasks._do_payment",
+                return_value={
+                    "tx_hash": "0xabc",
+                    "payer_address": "0x2000000000000000000000000000000000000002",
+                },
+            ) as do_payment_mock,
+            patch(
+                "stress.tasks.check_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_stress_case_payment.run(case.pk)
+
+        do_payment_mock.assert_called_once_with(case)
+        self.assertEqual(case.status, InvoiceStressCaseStatus.PAID)
+        self.assertEqual(case.tx_hash, "0xabc")
+        self.assertEqual(
+            case.payer_address, "0x2000000000000000000000000000000000000002"
+        )
+        self.assertIsNotNone(case.chain_paid_at)
+        webhook_dispatch_mock.assert_called_once()
+        # 成功路径不应触发 on_case_finished（由 webhook / timeout 推进）
+        on_finished_mock.assert_not_called()
+
+    def test_execute_stress_case_payment_failure_path(self):
+        """_do_payment raise → case 标 FAILED，调用 on_case_finished。"""
+        case = self._make_invoice_case()
+
+        with (
+            self._patch_invoice_get(case),
+            patch(
+                "stress.tasks._do_payment",
+                side_effect=RuntimeError("rpc down"),
+            ),
+            patch(
+                "stress.tasks.check_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_stress_case_payment.run(case.pk)
+
+        self.assertEqual(case.status, InvoiceStressCaseStatus.FAILED)
+        self.assertEqual(case.error, "rpc down")
+        self.assertIsNotNone(case.finished_at)
+        webhook_dispatch_mock.assert_not_called()
+        on_finished_mock.assert_called_once_with(case)
+
+    # ── Deposit 流程 ────────────────────────────────────────────
+
+    def _make_deposit_case(self, **overrides):
+        case = SimpleNamespace(
+            pk=77,
+            status=DepositStressCaseStatus.CREATING,
+            crypto="USDT",
+            chain="ethereum-local",
+            deposit_address="0xdepositaddr",
+            amount=Decimal("0.01"),
+            tx_hash="",
+            payer_address="",
+        )
+        for key, value in overrides.items():
+            setattr(case, key, value)
+        case.save = Mock()
+        return case
+
+    def _patch_deposit_get(self, case):
+        return patch(
+            "stress.tasks.DepositStressCase.objects.select_related",
+            return_value=SimpleNamespace(get=Mock(return_value=case)),
+        )
+
+    def test_execute_deposit_dispatches_payment_task_after_api_phase(self):
+        """_execute_deposit 完成 API 阶段后保持 status=CREATING，并 countdown=2 调度 payment。"""
+        case = self._make_deposit_case(deposit_address="")
+
+        with (
+            patch(
+                "stress.tasks.StressService.get_deposit_address",
+                return_value="0xdepositaddr",
+            ),
+            patch(
+                "stress.tasks.execute_deposit_case_payment.apply_async"
+            ) as payment_dispatch_mock,
+            patch("stress.tasks.simulate_payment") as simulate_mock,
+            patch(
+                "stress.tasks.check_deposit_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+        ):
+            _execute_deposit(case)
+
+        # _execute_deposit 不再直接发起链上充值
+        simulate_mock.assert_not_called()
+        webhook_dispatch_mock.assert_not_called()
+        payment_dispatch_mock.assert_called_once_with(args=[case.pk], countdown=2)
+        # 状态停在 CREATING，等待 payment task 推进
+        self.assertEqual(case.status, DepositStressCaseStatus.CREATING)
+        self.assertEqual(case.deposit_address, "0xdepositaddr")
+
+    def test_execute_deposit_case_payment_skips_when_status_not_creating(self):
+        """非 CREATING 状态必须直接 noop。"""
+        case = self._make_deposit_case(status=DepositStressCaseStatus.SKIPPED)
+
+        with (
+            self._patch_deposit_get(case),
+            patch("stress.tasks.simulate_payment") as simulate_mock,
+            patch(
+                "stress.tasks.check_deposit_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+        ):
+            execute_deposit_case_payment.run(case.pk)
+
+        simulate_mock.assert_not_called()
+        webhook_dispatch_mock.assert_not_called()
+        case.save.assert_not_called()
+        self.assertEqual(case.status, DepositStressCaseStatus.SKIPPED)
+
+    def test_execute_deposit_case_payment_success_path(self):
+        """CREATING → PAYING → PAID，写入 chain_paid_at / tx_hash / payer_address，
+        并派发 webhook 超时检查。"""
+        case = self._make_deposit_case()
+
+        with (
+            self._patch_deposit_get(case),
+            patch(
+                "stress.tasks.simulate_payment",
+                return_value={
+                    "tx_hash": "0xdef",
+                    "payer_address": "0x3000000000000000000000000000000000000003",
+                },
+            ) as simulate_mock,
+            patch(
+                "stress.tasks.check_deposit_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_deposit_case_payment.run(case.pk)
+
+        simulate_mock.assert_called_once_with(
+            to_address="0xdepositaddr",
+            chain_code="ethereum-local",
+            crypto_symbol="USDT",
+            amount=Decimal("0.01"),
+            payment_ref=f"deposit-{case.pk}",
+        )
+        self.assertEqual(case.status, DepositStressCaseStatus.PAID)
+        self.assertEqual(case.tx_hash, "0xdef")
+        self.assertEqual(
+            case.payer_address, "0x3000000000000000000000000000000000000003"
+        )
+        self.assertIsNotNone(case.chain_paid_at)
+        webhook_dispatch_mock.assert_called_once()
+        on_finished_mock.assert_not_called()
+
+    def test_execute_deposit_case_payment_failure_path(self):
+        """simulate_payment raise → case 标 FAILED，调用 on_case_finished。"""
+        case = self._make_deposit_case()
+
+        with (
+            self._patch_deposit_get(case),
+            patch(
+                "stress.tasks.simulate_payment",
+                side_effect=RuntimeError("chain unavailable"),
+            ),
+            patch(
+                "stress.tasks.check_deposit_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_deposit_case_payment.run(case.pk)
+
+        self.assertEqual(case.status, DepositStressCaseStatus.FAILED)
+        self.assertEqual(case.error, "chain unavailable")
+        self.assertIsNotNone(case.finished_at)
+        webhook_dispatch_mock.assert_not_called()
+        on_finished_mock.assert_called_once_with(case)
 
 
 class StressRecipientSetupTests(TestCase):
