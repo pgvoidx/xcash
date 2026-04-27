@@ -317,6 +317,8 @@ class LocalChainBootstrapCommandTests(TestCase):
         miner_client = Mock()
         root_client.list_wallets.return_value = []
         root_client.load_wallet.side_effect = BitcoinRpcError("Wallet file not found")
+        # 首次运行场景：bitcoind 链上还是空的，命令应一次性补挖到目标块高。
+        miner_client.get_block_count.return_value = 0
         miner_client.get_new_address.return_value = (
             "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"
         )
@@ -342,6 +344,36 @@ class LocalChainBootstrapCommandTests(TestCase):
             label="xcash-watch-only",
             rescan=False,
         )
+
+    @patch.dict(
+        environ,
+        {
+            "BITCOIN_NETWORK": "regtest",
+            "LOCAL_BTC_RPC_USER": "xcash",
+            "LOCAL_BTC_RPC_PASSWORD": "xcash",
+            "LOCAL_BTC_RPC_HOST": "127.0.0.1",
+            "LOCAL_BTC_RPC_PORT": "18443",
+        },
+        clear=False,
+    )
+    @patch("core.management.commands.prepare_local_bitcoin.BitcoinRpcClient")
+    def test_prepare_local_bitcoin_skips_mining_when_block_height_already_satisfied(
+        self,
+        bitcoin_client_cls,
+    ):
+        # mine-blocks 是"目标最低块高"语义：链上已经够高时必须跳过，避免重复运行又挖一遍。
+        root_client = Mock()
+        wallet_client = Mock()
+        miner_client = Mock()
+        root_client.list_wallets.return_value = ["xcash", "xcash-miner"]
+        wallet_client.get_wallet_info.return_value = {"private_keys_enabled": False}
+        miner_client.get_block_count.return_value = 150
+        bitcoin_client_cls.side_effect = [root_client, wallet_client, miner_client]
+
+        call_command("prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101")
+
+        miner_client.generate_to_address.assert_not_called()
+        miner_client.get_new_address.assert_not_called()
 
 
 class InitEnvScriptTests(TestCase):
@@ -1659,6 +1691,13 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
             expires_at=timezone.now() + timedelta(minutes=10),
         )
         invoice.select_method(crypto, chain)
+        # Bitcoin 区块时间戳是整秒精度，invoice.started_at 是 timezone.now() 的微秒精度。
+        # 实测中两者落在同一秒时，会出现 transfer.datetime < invoice.started_at（差几百毫秒），
+        # 导致 InvoicePaySlot 的 started_at__lte 过滤失败。生产里付款必然在 invoice 创建之后
+        # 才会进 mempool，不会触发；这里把 started_at 拨早 1 秒模拟同样的真实时序。
+        Invoice.objects.filter(pk=invoice.pk).update(
+            started_at=invoice.started_at - timedelta(seconds=1)
+        )
         invoice.refresh_from_db()
         self.assertEqual(invoice.pay_address, recipient.address)
         self.assertEqual(invoice.pay_amount, Decimal("0.012"))

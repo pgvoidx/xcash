@@ -24,7 +24,10 @@ class Command(BaseCommand):
             "--mine-blocks",
             type=int,
             default=101,
-            help="首次准备时预挖的区块数，默认 101（让 coinbase 立即成熟）",
+            help=(
+                "目标最低块高，默认 101（让 coinbase 立即成熟）；"
+                "当前块高 ≥ 此值时跳过挖矿，命令幂等"
+            ),
         )
         parser.add_argument(
             "--skip-import",
@@ -55,12 +58,22 @@ class Command(BaseCommand):
 
         if mine_blocks:
             # regtest 必须先挖成熟 coinbase，后续 sendtoaddress 才能直接给系统地址打款。
-            mining_address = miner_client.get_new_address(
-                label="xcash-regtest-miner",
-                address_type="legacy",
-            )
-            miner_client.generate_to_address(mine_blocks, mining_address)
-            self.stdout.write(f"✅ 已预挖 {mine_blocks} 个 regtest 区块（钱包 {miner_wallet_name}）")
+            # mine_blocks 语义为"目标最低块高"：已经够高就跳过，避免重复运行又挖一遍。
+            current_height = miner_client.get_block_count()
+            if current_height >= mine_blocks:
+                self.stdout.write(
+                    f"⏭️  当前块高 {current_height} ≥ {mine_blocks}，跳过预挖"
+                )
+            else:
+                deficit = mine_blocks - current_height
+                mining_address = miner_client.get_new_address(
+                    label="xcash-regtest-miner",
+                    address_type="legacy",
+                )
+                miner_client.generate_to_address(deficit, mining_address)
+                self.stdout.write(
+                    f"✅ 已补挖 {deficit} 个区块至块高 {mine_blocks}（钱包 {miner_wallet_name}）"
+                )
 
         if not skip_import:
             imported_count = self._import_known_bitcoin_addresses(
