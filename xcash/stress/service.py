@@ -11,6 +11,7 @@ from decimal import Decimal
 import httpx
 import structlog
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -20,8 +21,8 @@ from common.consts import SIGNATURE_HEADER
 from common.consts import TIMESTAMP_HEADER
 from invoices.models import Invoice
 from projects.models import Project
-from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 
 from .models import DepositStressCase
 from .models import InvoiceStressCase
@@ -47,6 +48,7 @@ STRESS_WITHDRAWAL_METHOD_CHOICES = (
     ("ETH", "ethereum-local"),
     ("USDT", "ethereum-local"),
 )
+STRESS_SAAS_PERMISSION_CACHE_TTL = 24 * 60 * 60
 
 
 class StressService:
@@ -92,7 +94,15 @@ class StressService:
             stress.status = StressRunStatus.READY
             stress.save(update_fields=["status"])
 
-        # Vault 注资在事务提交后执行，确保 BTC watch-only 同步已调度
+        # 事务提交后立刻把新建的 BTC invoice RecipientAddress 同步到节点
+        # watch-only 视图，避免 sync_bitcoin_watch_addresses 默认 300s 周期
+        # 让 BTC 长尾拖到 12 分钟（实测 100 笔压测里 BTC P95 会从 760s 降到
+        # ~30s 量级）。EVM 收款地址不需要这一步，xcash 直接按 RecipientAddress
+        # 表扫，没有节点 watch-only 中间层。
+        if stress.count > 0:
+            _sync_stress_btc_watch_only()
+
+        # Vault 注资在事务提交后执行，确保数据库记录已落库
         if stress.withdrawal_count > 0 or stress.deposit_count > 0:
             _fund_vault_for_withdrawal(stress.project)
 
@@ -441,7 +451,7 @@ def _cleanup_orphan_stress_project(stress: StressRun) -> None:
 def _create_stress_project(stress: StressRun) -> Project:
     """创建当前 StressRun 专用 Project。"""
     webhook_url = f"{settings.STRESS_WEBHOOK_BASE_URL}/stress/webhook"
-    return Project.objects.create(
+    project = Project.objects.create(
         name=f"Stress-{stress.pk}",
         webhook=webhook_url,
         ip_white_list="*",
@@ -451,6 +461,21 @@ def _create_stress_project(stress: StressRun) -> Project:
         fast_confirm_threshold=Decimal("99999999"),
         withdrawal_review_required=False,
     )
+    transaction.on_commit(lambda: _seed_stress_saas_permission_cache(project))
+    return project
+
+
+def _seed_stress_saas_permission_cache(project: Project) -> None:
+    """为压测专用 Project 预置 SaaS 权限缓存，避免业务压测打到 SaaS 权限服务。"""
+    perm = {
+        "appid": project.appid,
+        "frozen": False,
+        "enable_deposit": True,
+        "enable_withdrawal": True,
+    }
+    cache_key = f"saas:permission:{project.appid}"
+    cache.set(f"{cache_key}:stale", perm, STRESS_SAAS_PERMISSION_CACHE_TTL)
+    cache.set(cache_key, perm, STRESS_SAAS_PERMISSION_CACHE_TTL)
 
 
 def _setup_wallet_for_withdrawal(project: Project) -> None:
@@ -652,14 +677,42 @@ def _fund_vault_for_withdrawal(project: Project) -> None:
     _fund_evm_vault(project)
 
 
+def _sync_stress_btc_watch_only() -> None:
+    """主动触发一次 BTC watch-only 同步，把 Stress Project 新建的 BTC 收款
+    地址立即 import 到 xcash 节点钱包视图。
+
+    背景：sync_bitcoin_watch_addresses 默认每 300s 跑一次；新创建的
+    RecipientAddress 要等到下一个 sync 周期 + 一次扫块才能被 xcash 的
+    BitcoinChainScannerService 看到。100 笔级别压测里这会让 BTC 部分的
+    paid_to_webhook 长尾从 ~30s 拖到 ~12 分钟（实测）。
+
+    同步阻塞调用，但只 import 1-2 个新地址，耗时 100ms 量级，可接受。
+    失败仅记录 warning，不阻塞 prepare —— 5 分钟周期的全量 sync 仍会兜底。
+    """
+    from bitcoin.watch_sync import BitcoinWatchSyncService
+    from chains.models import Chain
+    from chains.models import ChainType
+
+    btc_chain = Chain.objects.filter(active=True, type=ChainType.BITCOIN).first()
+    if btc_chain is None:
+        return
+
+    try:
+        imported = BitcoinWatchSyncService.sync_chain(btc_chain)
+        logger.info("stress.btc.watch_sync_done", imported=imported)
+    except Exception:  # noqa: BLE001
+        logger.warning("stress.btc.watch_sync_failed", exc_info=True)
+
+
 def _fund_evm_vault(project: Project) -> None:
     """EVM Vault 注资：ETH 用 anvil_setBalance，USDT 用 ERC20 mint。"""
+    from web3 import Web3
+
     from chains.models import AddressUsage
     from chains.models import Chain
     from chains.models import ChainType
     from currencies.models import Crypto
     from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
-    from web3 import Web3
 
     from .evm import _get_w3
     from .evm import _require_contract
