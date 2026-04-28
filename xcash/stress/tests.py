@@ -28,8 +28,8 @@ from stress.models import StressRun
 from stress.models import StressRunStatus
 from stress.payment import simulate_payment
 from stress.service import _ANVIL_RECIPIENT_ADDRESSES
-from stress.service import _build_deposit_cases
 from stress.service import StressService
+from stress.service import _build_deposit_cases
 from stress.service import _setup_recipient_addresses
 from stress.tasks import _execute
 from stress.tasks import _execute_deposit
@@ -198,6 +198,41 @@ class StressServiceTests(SimpleTestCase):
         self.assertEqual(len(created_cases), 5)
         self.assertTrue(all(not hasattr(case, "scenario") for case in created_cases))
 
+    def test_prepare_seeds_full_saas_permission_cache_for_created_project(self):
+        stress = StressRun(
+            id=23,
+            count=1,
+            status=StressRunStatus.PREPARING,
+        )
+        stress.save = Mock()
+
+        created_project = Project(pk=99, appid="XC-STRESS")
+        expected_perm = {
+            "appid": "XC-STRESS",
+            "frozen": False,
+            "enable_deposit": True,
+            "enable_withdrawal": True,
+        }
+
+        with (
+            patch(
+                "stress.service.Project.objects.create", return_value=created_project
+            ),
+            patch("stress.service._setup_recipient_addresses"),
+            patch("stress.service.cache", create=True) as cache_mock,
+            patch("stress.service.InvoiceStressCase.objects.bulk_create"),
+            patch("stress.service.random.gauss", return_value=0.0),
+            patch("stress.service.random.shuffle"),
+        ):
+            StressService.prepare(stress)
+
+        cache_mock.set.assert_any_call(
+            "saas:permission:XC-STRESS", expected_perm, 86400
+        )
+        cache_mock.set.assert_any_call(
+            "saas:permission:XC-STRESS:stale", expected_perm, 86400
+        )
+
     def test_prepare_raises_when_recipient_setup_fails(self):
         stress = StressRun(
             id=23,
@@ -212,6 +247,7 @@ class StressServiceTests(SimpleTestCase):
                 "stress.service._setup_recipient_addresses",
                 side_effect=RuntimeError("btc recipient missing"),
             ),
+            patch("stress.service.cache", create=True) as cache_mock,
             patch(
                 "stress.service.InvoiceStressCase.objects.bulk_create"
             ) as bulk_create_mock,
@@ -220,6 +256,7 @@ class StressServiceTests(SimpleTestCase):
             StressService.prepare(stress)
 
         bulk_create_mock.assert_not_called()
+        cache_mock.set.assert_not_called()
 
     def test_build_deposit_cases_uses_decimal_sampling_without_float_uniform(self):
         stress = StressRun(
@@ -760,6 +797,31 @@ class StressPaymentTaskTests(SimpleTestCase):
         webhook_dispatch_mock.assert_not_called()
         on_finished_mock.assert_called_once_with(case)
 
+    def test_execute_stress_case_payment_btc_dust_marked_skipped(self):
+        """BTC sendtoaddress dust 错误 → SKIPPED 而非 FAILED，不污染失败率统计。"""
+        case = self._make_invoice_case(crypto="BTC", chain="bitcoin-local")
+
+        with (
+            self._patch_invoice_get(case),
+            patch(
+                "stress.tasks._do_payment",
+                side_effect=RuntimeError(
+                    "Bitcoin RPC error (sendtoaddress): Transaction amount too small"
+                ),
+            ),
+            patch(
+                "stress.tasks.check_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_stress_case_payment.run(case.pk)
+
+        self.assertEqual(case.status, InvoiceStressCaseStatus.SKIPPED)
+        self.assertIn("Transaction amount too small", case.error)
+        self.assertIsNotNone(case.finished_at)
+        webhook_dispatch_mock.assert_not_called()
+        on_finished_mock.assert_called_once_with(case)
+
     # ── Deposit 流程 ────────────────────────────────────────────
 
     def _make_deposit_case(self, **overrides):
@@ -885,6 +947,31 @@ class StressPaymentTaskTests(SimpleTestCase):
 
         self.assertEqual(case.status, DepositStressCaseStatus.FAILED)
         self.assertEqual(case.error, "chain unavailable")
+        self.assertIsNotNone(case.finished_at)
+        webhook_dispatch_mock.assert_not_called()
+        on_finished_mock.assert_called_once_with(case)
+
+    def test_execute_deposit_case_payment_btc_dust_marked_skipped(self):
+        """Deposit 链路同样把 BTC dust 错误转 SKIPPED（防御性兜底，未来放开 BTC 充币时直接生效）。"""
+        case = self._make_deposit_case(crypto="BTC", chain="bitcoin-local")
+
+        with (
+            self._patch_deposit_get(case),
+            patch(
+                "stress.tasks.simulate_payment",
+                side_effect=RuntimeError(
+                    "Bitcoin RPC error (sendtoaddress): Transaction amount too small"
+                ),
+            ),
+            patch(
+                "stress.tasks.check_deposit_webhook_timeout.apply_async"
+            ) as webhook_dispatch_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            execute_deposit_case_payment.run(case.pk)
+
+        self.assertEqual(case.status, DepositStressCaseStatus.SKIPPED)
+        self.assertIn("Transaction amount too small", case.error)
         self.assertIsNotNone(case.finished_at)
         webhook_dispatch_mock.assert_not_called()
         on_finished_mock.assert_called_once_with(case)
