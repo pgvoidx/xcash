@@ -18,7 +18,7 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 EVM_ERC20_SCAN_SCHEDULE_SECONDS = 10
-EVM_NATIVE_SCAN_SCHEDULE_SECONDS = 15
+EVM_NATIVE_SCAN_SCHEDULE_SECONDS = 10
 TRON_SCAN_SCHEDULE_SECONDS = 10
 
 
