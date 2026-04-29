@@ -9,6 +9,8 @@ class EvmConfig(AppConfig):
     verbose_name = _("EVM")
 
     def ready(self):
+        import evm.signals  # noqa: F401, PLC0415
+
         post_migrate.connect(
             _install_db_triggers_after_migrate,
             dispatch_uid="evm.install_db_triggers",
@@ -22,12 +24,12 @@ def _install_db_triggers_after_migrate(sender, **kwargs) -> None:
     using = kwargs.get("using", "default")
     if using in _installed_aliases:
         return
-    from django.db import connections
+    from django.db import connections  # noqa: PLC0415
 
     existing_tables = set(connections[using].introspection.table_names())
     if "evm_evmbroadcasttask" not in existing_tables:
         return
-    from evm.db_triggers import install_triggers
+    from evm.db_triggers import install_triggers  # noqa: PLC0415
 
     install_triggers(using=using)
     _installed_aliases.add(using)
