@@ -10,6 +10,8 @@ from django.db.models import Q
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
+from chains.models import Chain
+from chains.models import ChainType
 from common.decorators import singleton_task
 from common.time import ago
 from evm.coordinator import InternalEvmTaskCoordinator
@@ -163,8 +165,6 @@ def dispatch_due_evm_broadcast_tasks() -> None:
 @singleton_task(timeout=48, use_params=True)
 def scan_evm_chain(chain_pk: int) -> None:
     """按链执行一次 EVM 自扫描，同时扫描原生币直转和 ERC20 Transfer。"""
-    from chains.models import Chain
-
     chain = Chain.objects.get(pk=chain_pk)
     if not chain.active:
         return
@@ -195,16 +195,89 @@ def scan_evm_chain(chain_pk: int) -> None:
 
 
 @shared_task(ignore_result=True)
+@singleton_task(timeout=48, use_params=True)
+def scan_evm_erc20_chain(chain_pk: int) -> None:
+    """按链执行一次 EVM ERC20 Transfer 自扫描。"""
+    chain = Chain.objects.get(pk=chain_pk)
+    if not chain.active:
+        return
+
+    result = None
+    try:
+        result = EvmChainScannerService.scan_erc20(chain=chain)
+    except EvmScannerRpcError:
+        logger.warning("EVM ERC20 自扫描 RPC 失败", chain=chain.code)
+
+    InternalEvmTaskCoordinator.reconcile_chain(chain=chain)
+    if result is None:
+        return
+
+    logger.info(
+        "EVM ERC20 自扫描完成",
+        chain=chain.code,
+        erc20_from=result.from_block,
+        erc20_to=result.to_block,
+        erc20_logs=result.observed_logs,
+        erc20_created=result.created_transfers,
+    )
+
+
+@shared_task(ignore_result=True)
+@singleton_task(timeout=48, use_params=True)
+def scan_evm_native_chain(chain_pk: int) -> None:
+    """按链执行一次 EVM 原生币直转自扫描。"""
+    chain = Chain.objects.get(pk=chain_pk)
+    if not chain.active:
+        return
+
+    result = None
+    try:
+        result = EvmChainScannerService.scan_native(chain=chain)
+    except EvmScannerRpcError:
+        logger.warning("EVM 原生币自扫描 RPC 失败", chain=chain.code)
+
+    InternalEvmTaskCoordinator.reconcile_chain(chain=chain)
+    if result is None:
+        return
+
+    logger.info(
+        "EVM 原生币自扫描完成",
+        chain=chain.code,
+        native_from=result.from_block,
+        native_to=result.to_block,
+        native_observed=result.observed_transfers,
+        native_created=result.created_transfers,
+    )
+
+
+@shared_task(ignore_result=True)
 def scan_active_evm_chains() -> None:
     """批量调度所有启用中的 EVM 链自扫描任务。"""
-    from chains.models import Chain
-    from chains.models import ChainType
-
     for chain_pk in Chain.objects.filter(
         active=True,
         type=ChainType.EVM,
     ).values_list("pk", flat=True):
         scan_evm_chain.delay(chain_pk)
+
+
+@shared_task(ignore_result=True)
+def scan_active_evm_erc20_chains() -> None:
+    """批量调度所有启用中的 EVM 链 ERC20 自扫描任务。"""
+    for chain_pk in Chain.objects.filter(
+        active=True,
+        type=ChainType.EVM,
+    ).values_list("pk", flat=True):
+        scan_evm_erc20_chain.delay(chain_pk)
+
+
+@shared_task(ignore_result=True)
+def scan_active_evm_native_chains() -> None:
+    """批量调度所有启用中的 EVM 链原生币直转自扫描任务。"""
+    for chain_pk in Chain.objects.filter(
+        active=True,
+        type=ChainType.EVM,
+    ).values_list("pk", flat=True):
+        scan_evm_native_chain.delay(chain_pk)
 
 
 def _estimate_avg_block_interval(chain) -> float:
