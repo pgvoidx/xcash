@@ -52,7 +52,7 @@ class EvmErc20ScanWindowTests(SimpleTestCase):
             batch_size=100,
         )
 
-        self.assertEqual(from_block, 997)
+        self.assertEqual(from_block, 999)
         self.assertEqual(to_block, 1100)
 
     def test_erc20_compute_scan_window_caps_to_latest_when_near_chain_head(self):
@@ -63,7 +63,7 @@ class EvmErc20ScanWindowTests(SimpleTestCase):
             batch_size=100,
         )
 
-        self.assertEqual(from_block, 1987)
+        self.assertEqual(from_block, 1989)
         self.assertEqual(to_block, 2000)
 
     def test_erc20_compute_scan_window_returns_empty_when_latest_block_is_zero(self):
@@ -99,7 +99,7 @@ class EvmNativeScanWindowTests(SimpleTestCase):
             batch_size=16,
         )
 
-        self.assertEqual(from_block, 997)
+        self.assertEqual(from_block, 999)
         self.assertEqual(to_block, 1016)
 
     def test_native_compute_scan_window_caps_to_latest_when_near_chain_head(self):
@@ -110,7 +110,7 @@ class EvmNativeScanWindowTests(SimpleTestCase):
             batch_size=16,
         )
 
-        self.assertEqual(from_block, 1987)
+        self.assertEqual(from_block, 1989)
         self.assertEqual(to_block, 2000)
 
     def test_native_compute_scan_window_must_still_progress_when_far_behind(self):
@@ -121,7 +121,7 @@ class EvmNativeScanWindowTests(SimpleTestCase):
             batch_size=12,
         )
 
-        self.assertEqual(from_block, 10_516_047)
+        self.assertEqual(from_block, 10_516_049)
         self.assertEqual(to_block, 10_516_062)
 
 
@@ -266,8 +266,8 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
         )
-        # erc20 replay_blocks = 4, from_block = 100 + 1 - 4 = 97
-        self.assertEqual(result.from_block, 97)
+        # erc20 replay_blocks = 2, from_block = 100 + 1 - 2 = 99
+        self.assertEqual(result.from_block, 99)
         self.assertEqual(result.to_block, 100)
         self.assertEqual(cursor.last_scanned_block, 100)
         self.assertEqual(cursor.last_safe_block, 94)
@@ -380,11 +380,11 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
         )
-        # erc20 replay_blocks = 4, 第一轮 bootstrap 到 100: from = 100+1-4 = 97
-        self.assertEqual(first.from_block, 97)
+        # erc20 replay_blocks = 2, 第一轮 bootstrap 到 100: from = 100+1-2 = 99
+        self.assertEqual(first.from_block, 99)
         self.assertEqual(first.to_block, 100)
-        # 第二轮: last_scanned=100, from = 100+1-4 = 97
-        self.assertEqual(second.from_block, 97)
+        # 第二轮: last_scanned=100, from = 100+1-2 = 99
+        self.assertEqual(second.from_block, 99)
         self.assertEqual(second.to_block, 110)
         self.assertEqual(cursor.last_scanned_block, 110)
 
@@ -665,8 +665,8 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
         )
-        # native replay_blocks = 4, from_block = 20 + 1 - 4 = 17
-        self.assertEqual(result.from_block, 17)
+        # native replay_blocks = 2, from_block = 20 + 1 - 2 = 19
+        self.assertEqual(result.from_block, 19)
         self.assertEqual(result.to_block, 20)
         self.assertEqual(cursor.last_scanned_block, 20)
         self.assertEqual(cursor.last_safe_block, 14)
@@ -822,7 +822,7 @@ class EvmErc20ScannerTests(TestCase):
             ]
         )
         get_full_block_mock.side_effect = lambda *, block_number: (
-            repeated_block if block_number == 10 else self._build_native_block(txs=[])
+            repeated_block if block_number == 11 else self._build_native_block(txs=[])
         )
 
         first = EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=12)

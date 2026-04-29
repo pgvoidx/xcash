@@ -14,10 +14,10 @@ class EvmScannerDefaultsTests(TestCase):
         self.assertEqual(DEFAULT_NATIVE_SCAN_BATCH_SIZE, 16)
 
     def test_erc20_scan_uses_small_fixed_replay_window(self):
-        self.assertEqual(DEFAULT_ERC20_SCAN_REPLAY_BLOCKS, 4)
+        self.assertEqual(DEFAULT_ERC20_SCAN_REPLAY_BLOCKS, 2)
 
     def test_native_scan_uses_small_fixed_replay_window(self):
-        self.assertEqual(DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS, 4)
+        self.assertEqual(DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS, 2)
 
     def test_evm_scanner_schedules_are_split_by_scan_type(self):
         self.assertEqual(EVM_ERC20_SCAN_SCHEDULE_SECONDS, 10)
