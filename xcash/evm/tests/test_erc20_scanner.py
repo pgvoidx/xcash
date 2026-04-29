@@ -1,40 +1,18 @@
-import threading
-from datetime import timedelta
 from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import Mock
-from unittest.mock import PropertyMock
 from unittest.mock import patch
 
-from django.contrib.admin.sites import AdminSite
-from django.core.cache import cache
-from django.db import connections
-from django.db import close_old_connections
 from django.test import TestCase
-from django.test import TransactionTestCase
 from django.test import override_settings
-from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainTransfer
-from chains.models import TransferType
-from chains.models import TxHash
 from chains.models import Wallet
-from chains.service import ObservedTransferPayload
-from chains.service import TransferService
-from common.consts import ERC20_TRANSFER_GAS
 from currencies.models import ChainToken
 from currencies.models import Crypto
-from evm.admin import EvmScanCursorAdmin
-from evm.models import EvmBroadcastTask
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.erc20 import EvmErc20ScanResult
@@ -42,9 +20,15 @@ from evm.scanner.erc20 import EvmErc20TransferScanner
 from evm.scanner.native import EvmNativeDirectScanner
 from evm.scanner.native import EvmNativeScanResult
 from evm.scanner.rpc import EvmScannerRpcError
+from evm.scanner.watchers import load_watch_set
+from evm.tasks import scan_active_evm_erc20_chains
+from evm.tasks import scan_active_evm_native_chains
+from evm.tasks import scan_evm_chain
+from evm.tasks import scan_evm_erc20_chain
+from evm.tasks import scan_evm_native_chain
+from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
-
 
 
 @override_settings(DEBUG=False)
@@ -146,6 +130,24 @@ class EvmErc20ScannerTests(TestCase):
             "value": value,
             "input": input_data,
         }
+
+    def _create_scan_dispatch_ignored_chains(self) -> None:
+        Chain.objects.create(
+            code="bsc-inactive",
+            name="BSC Inactive",
+            type=ChainType.EVM,
+            chain_id=57,
+            rpc="http://inactive-bsc.local",
+            native_coin=self.native,
+            active=False,
+        )
+        Chain.objects.create(
+            code="tron-active",
+            name="Tron Active",
+            type=ChainType.TRON,
+            native_coin=self.native,
+            active=True,
+        )
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
@@ -410,8 +412,6 @@ class EvmErc20ScannerTests(TestCase):
         reconcile_chain_mock,
     ):
         # Celery 入口应只负责链级调度，不再混入具体日志解析逻辑。
-        from evm.tasks import scan_evm_chain
-
         scan_evm_chain(self.chain.pk)
 
         scan_chain_mock.assert_called_once()
@@ -428,12 +428,104 @@ class EvmErc20ScannerTests(TestCase):
         reconcile_chain_mock,
     ):
         # 主扫描 RPC 异常不能阻断内部 PENDING_CHAIN 任务的超时收口。
-        from evm.tasks import scan_evm_chain
-
         scan_evm_chain(self.chain.pk)
 
         scan_chain_mock.assert_called_once()
         reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.InternalEvmTaskCoordinator.reconcile_chain")
+    @patch("evm.tasks.EvmChainScannerService.scan_erc20")
+    def test_scan_evm_erc20_chain_task_dispatches_erc20_scanner(
+        self,
+        scan_erc20_mock,
+        reconcile_chain_mock,
+    ):
+        # ERC20 扫描应有独立 Celery 入口，避免被 native full-block 扫描周期绑死。
+        scan_erc20_mock.return_value = EvmErc20ScanResult(
+            from_block=1,
+            to_block=2,
+            latest_block=100,
+            observed_logs=3,
+            created_transfers=1,
+        )
+
+        scan_evm_erc20_chain(self.chain.pk)
+
+        scan_erc20_mock.assert_called_once()
+        reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.InternalEvmTaskCoordinator.reconcile_chain")
+    @patch(
+        "evm.tasks.EvmChainScannerService.scan_erc20",
+        side_effect=EvmScannerRpcError("erc20 rpc timeout"),
+    )
+    def test_scan_evm_erc20_chain_runs_coordinator_when_rpc_fails(
+        self,
+        scan_erc20_mock,
+        reconcile_chain_mock,
+    ):
+        scan_evm_erc20_chain(self.chain.pk)
+
+        scan_erc20_mock.assert_called_once()
+        reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.InternalEvmTaskCoordinator.reconcile_chain")
+    @patch("evm.tasks.EvmChainScannerService.scan_native")
+    def test_scan_evm_native_chain_task_dispatches_native_scanner(
+        self,
+        scan_native_mock,
+        reconcile_chain_mock,
+    ):
+        # native 扫描应有独立 Celery 入口，便于使用低于 ERC20 的扫描频率。
+        scan_native_mock.return_value = EvmNativeScanResult(
+            from_block=1,
+            to_block=2,
+            latest_block=100,
+            observed_transfers=1,
+            created_transfers=1,
+        )
+
+        scan_evm_native_chain(self.chain.pk)
+
+        scan_native_mock.assert_called_once()
+        reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.InternalEvmTaskCoordinator.reconcile_chain")
+    @patch(
+        "evm.tasks.EvmChainScannerService.scan_native",
+        side_effect=EvmScannerRpcError("native rpc timeout"),
+    )
+    def test_scan_evm_native_chain_runs_coordinator_when_rpc_fails(
+        self,
+        scan_native_mock,
+        reconcile_chain_mock,
+    ):
+        scan_evm_native_chain(self.chain.pk)
+
+        scan_native_mock.assert_called_once()
+        reconcile_chain_mock.assert_called_once()
+
+    @patch("evm.tasks.scan_evm_erc20_chain.delay")
+    def test_scan_active_evm_erc20_chains_dispatches_erc20_task(
+        self,
+        delay_mock,
+    ):
+        self._create_scan_dispatch_ignored_chains()
+
+        scan_active_evm_erc20_chains()
+
+        delay_mock.assert_called_once_with(self.chain.pk)
+
+    @patch("evm.tasks.scan_evm_native_chain.delay")
+    def test_scan_active_evm_native_chains_dispatches_native_task(
+        self,
+        delay_mock,
+    ):
+        self._create_scan_dispatch_ignored_chains()
+
+        scan_active_evm_native_chains()
+
+        delay_mock.assert_called_once_with(self.chain.pk)
 
     def test_watch_set_includes_recipient_addresses(self):
         # 收币地址同样属于系统观察集，后续 ERC20 扫描需要能命中这些地址。
@@ -446,8 +538,6 @@ class EvmErc20ScannerTests(TestCase):
             ),
             usage=RecipientAddressUsage.INVOICE,
         )
-
-        from evm.scanner.watchers import load_watch_set
 
         watch_set = load_watch_set(chain=self.chain)
 
@@ -754,9 +844,6 @@ class EvmErc20ScannerTests(TestCase):
         self.assertGreater(to_block, cursor.last_scanned_block)
 
     def _create_project_id(self) -> int:
-
-        from projects.models import Project
-
         project = Project.objects.create(
             name="scanner-project",
             wallet=Wallet.objects.create(),

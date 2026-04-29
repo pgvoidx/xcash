@@ -107,32 +107,39 @@ class EvmChainScannerService:
         if chain.type != ChainType.EVM:
             raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
 
-        if EvmChainScannerService._is_enabled(
-            chain=chain,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        ):
-            try:
-                native_result = EvmNativeDirectScanner.scan_chain(chain=chain)
-            except EvmScannerRpcError:
-                # 原生币逐块拉完整区块，RPC 压力和套餐限制都独立于 ERC20 日志扫描；
-                # native 失败不能阻断 ERC20，否则会把一个扫描面的故障扩散到另一个扫描面。
-                native_result = EvmChainScannerService._empty_native_result(chain=chain)
-        else:
+        try:
+            native_result = EvmChainScannerService.scan_native(chain=chain)
+        except EvmScannerRpcError:
+            # 原生币逐块拉完整区块，RPC 压力和套餐限制都独立于 ERC20 日志扫描；
+            # native 失败不能阻断 ERC20，否则会把一个扫描面的故障扩散到另一个扫描面。
             native_result = EvmChainScannerService._empty_native_result(chain=chain)
-
-        erc20_result = (
-            EvmErc20TransferScanner.scan_chain(chain=chain)
-            if EvmChainScannerService._is_enabled(
-                chain=chain,
-                scanner_type=EvmScanCursorType.ERC20_TRANSFER,
-            )
-            else EvmChainScannerService._empty_erc20_result(chain=chain)
-        )
 
         return EvmScanSummary(
             native=native_result,
-            erc20=erc20_result,
+            erc20=EvmChainScannerService.scan_erc20(chain=chain),
         )
+
+    @staticmethod
+    def scan_native(*, chain: Chain) -> EvmNativeScanResult:
+        if chain.type != ChainType.EVM:
+            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
+        if not EvmChainScannerService._is_enabled(
+            chain=chain,
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        ):
+            return EvmChainScannerService._empty_native_result(chain=chain)
+        return EvmNativeDirectScanner.scan_chain(chain=chain)
+
+    @staticmethod
+    def scan_erc20(*, chain: Chain) -> EvmErc20ScanResult:
+        if chain.type != ChainType.EVM:
+            raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
+        if not EvmChainScannerService._is_enabled(
+            chain=chain,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
+        ):
+            return EvmChainScannerService._empty_erc20_result(chain=chain)
+        return EvmErc20TransferScanner.scan_chain(chain=chain)
 
     @classmethod
     def scan_blocks_for_reconcile(

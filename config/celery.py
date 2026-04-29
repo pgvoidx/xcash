@@ -17,7 +17,8 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # Load task modules from all registered Django app configs.
 app.autodiscover_tasks()
 
-EVM_SCAN_SCHEDULE_SECONDS = 5
+EVM_ERC20_SCAN_SCHEDULE_SECONDS = 10
+EVM_NATIVE_SCAN_SCHEDULE_SECONDS = 15
 TRON_SCAN_SCHEDULE_SECONDS = 10
 
 
@@ -63,10 +64,15 @@ evm_tasks = {
         "task": "evm.tasks.dispatch_due_evm_broadcast_tasks",
         "schedule": 5,
     },
-    "scan_active_evm_chains": {
-        # 周期性触发所有启用中的 EVM 链自扫描，负责发现原生币直转与 ERC20 Transfer。
-        "task": "evm.tasks.scan_active_evm_chains",
-        "schedule": EVM_SCAN_SCHEDULE_SECONDS,
+    "scan_active_evm_erc20_chains": {
+        # ERC20 走 eth_getLogs，RPC 成本低于原生币 full block 扫描，可保持较高频率。
+        "task": "evm.tasks.scan_active_evm_erc20_chains",
+        "schedule": EVM_ERC20_SCAN_SCHEDULE_SECONDS,
+    },
+    "scan_active_evm_native_chains": {
+        # 原生币直转需要逐块拉完整交易列表，单独用更低频率降低 BSC 等链的 RPC 消耗。
+        "task": "evm.tasks.scan_active_evm_native_chains",
+        "schedule": EVM_NATIVE_SCAN_SCHEDULE_SECONDS,
     },
     "reconcile_stale_pending_chain_for_active_evm_chains": {
         # 兜底：主扫描漏扫导致的 PENDING_CHAIN 卡单，周期性按 receipt 主动命中并定点复扫。
