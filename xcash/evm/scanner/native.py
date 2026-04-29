@@ -18,7 +18,7 @@ from chains.service import TransferService
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.constants import DEFAULT_NATIVE_SCAN_BATCH_SIZE
-from evm.scanner.constants import DEFAULT_REORG_LOOKBACK_BLOCKS
+from evm.scanner.constants import DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS
 from evm.scanner.cursor import bootstrap_cursor_to_latest_for_debug
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.rpc import EvmScannerRpcError
@@ -98,7 +98,6 @@ class EvmNativeDirectScanner:
             from_block, to_block = cls._compute_scan_window(
                 cursor=cursor,
                 latest_block=latest_block,
-                confirm_block_count=chain.confirm_block_count,
                 batch_size=batch_size,
             )
             if from_block > to_block:
@@ -154,33 +153,27 @@ class EvmNativeDirectScanner:
         *,
         cursor: EvmScanCursor,
         latest_block: int,
-        confirm_block_count: int,
         batch_size: int,
     ) -> tuple[int, int]:
         if latest_block <= 0:
             return 0, -1
 
-        reorg_lookback = max(confirm_block_count, DEFAULT_REORG_LOOKBACK_BLOCKS)
+        replay_blocks = DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS
         if cursor.last_scanned_block <= 0:
             from_block = 1
         else:
-            from_block = max(1, cursor.last_scanned_block + 1 - reorg_lookback)
+            from_block = max(1, cursor.last_scanned_block + 1 - replay_blocks)
 
-        effective_batch_size = (
-            max(batch_size, reorg_lookback + 1)
-            if cursor.last_scanned_block > 0
-            else batch_size
-        )
-        # 原生币直转同样需要在接近链头时覆盖到最新块，避免只在旧窗口中反复重扫。
-        # 当 batch_size <= reorg_lookback 时，本轮总跨度若仍按 batch_size 计算，
-        # to_block 会回落到 last_scanned_block，导致游标零推进并永久卡住。
-        if (
-            cursor.last_scanned_block > 0
-            and latest_block - cursor.last_scanned_block <= batch_size
-        ):
-            to_block = latest_block
+        forward_batch_size = max(1, batch_size)
+        if cursor.last_scanned_block > 0:
+            # batch_size 表示本轮向前追的新块数；replay_blocks 只扩大旧块复扫范围，
+            # 不参与业务确认深度，也不能挤占净推进量。
+            to_block = min(
+                latest_block,
+                cursor.last_scanned_block + forward_batch_size,
+            )
         else:
-            to_block = min(latest_block, from_block + effective_batch_size - 1)
+            to_block = min(latest_block, from_block + forward_batch_size - 1)
         return from_block, to_block
 
     @classmethod

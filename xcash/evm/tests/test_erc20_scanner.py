@@ -1,6 +1,7 @@
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from web3 import Web3
@@ -31,13 +32,106 @@ from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
 
 
+class EvmErc20ScanWindowTests(SimpleTestCase):
+    def test_erc20_compute_scan_window_initial_cursor_starts_from_first_batch(self):
+        cursor = EvmScanCursor(last_scanned_block=0)
+        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=100,
+        )
+
+        self.assertEqual(from_block, 1)
+        self.assertEqual(to_block, 100)
+
+    def test_erc20_compute_scan_window_batch_size_is_net_forward_progress(self):
+        cursor = EvmScanCursor(last_scanned_block=1000)
+        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=100,
+        )
+
+        self.assertEqual(from_block, 997)
+        self.assertEqual(to_block, 1100)
+
+    def test_erc20_compute_scan_window_caps_to_latest_when_near_chain_head(self):
+        cursor = EvmScanCursor(last_scanned_block=1990)
+        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=100,
+        )
+
+        self.assertEqual(from_block, 1987)
+        self.assertEqual(to_block, 2000)
+
+    def test_erc20_compute_scan_window_returns_empty_when_latest_block_is_zero(self):
+        cursor = EvmScanCursor(last_scanned_block=0)
+        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=0,
+            batch_size=100,
+        )
+
+        self.assertGreater(from_block, to_block)
+
+
+class EvmNativeScanWindowTests(SimpleTestCase):
+    def test_native_compute_scan_window_initial_cursor_starts_from_first_batch(self):
+        cursor = EvmScanCursor(last_scanned_block=0)
+        from_block, to_block = EvmNativeDirectScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=16,
+        )
+
+        self.assertEqual(from_block, 1)
+        self.assertEqual(to_block, 16)
+
+    def test_native_compute_scan_window_batch_size_is_net_forward_progress(self):
+        # batch_size 表示本轮应向前追多少新块；replay_blocks 只增加旧块复扫范围，
+        # 不应吞掉净推进量，否则高确认数链会出现 last_scanned_block 缓慢推进但永远追不上。
+        cursor = EvmScanCursor(last_scanned_block=1000)
+        from_block, to_block = EvmNativeDirectScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=16,
+        )
+
+        self.assertEqual(from_block, 997)
+        self.assertEqual(to_block, 1016)
+
+    def test_native_compute_scan_window_caps_to_latest_when_near_chain_head(self):
+        cursor = EvmScanCursor(last_scanned_block=1990)
+        from_block, to_block = EvmNativeDirectScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=2000,
+            batch_size=16,
+        )
+
+        self.assertEqual(from_block, 1987)
+        self.assertEqual(to_block, 2000)
+
+    def test_native_compute_scan_window_must_still_progress_when_far_behind(self):
+        cursor = EvmScanCursor(last_scanned_block=10_516_050)
+        from_block, to_block = EvmNativeDirectScanner._compute_scan_window(
+            cursor=cursor,
+            latest_block=10_516_343,
+            batch_size=12,
+        )
+
+        self.assertEqual(from_block, 10_516_047)
+        self.assertEqual(to_block, 10_516_062)
+
+
 @override_settings(DEBUG=False)
 class EvmErc20ScannerTests(TestCase):
     def setUp(self):
         self.native = Crypto.objects.create(
-            name="BNB",
-            symbol="BNB",
-            coingecko_id="binancecoin",
+            name="Scanner BNB",
+            symbol="BNB-SCANNER",
+            coingecko_id="binancecoin-scanner",
         )
         self.chain = Chain.objects.create(
             code="bsc",
@@ -50,9 +144,9 @@ class EvmErc20ScannerTests(TestCase):
             active=True,
         )
         self.token = Crypto.objects.create(
-            name="Tether USD",
-            symbol="USDT",
-            coingecko_id="tether",
+            name="Scanner Tether USD",
+            symbol="USDT-SCANNER",
+            coingecko_id="tether-scanner",
             decimals=18,
         )
         self.token_deployment = ChainToken.objects.create(
@@ -172,8 +266,8 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
         )
-        # reorg_lookback = max(6, 6) = 6, from_block = 100 + 1 - 6 = 95
-        self.assertEqual(result.from_block, 95)
+        # erc20 replay_blocks = 4, from_block = 100 + 1 - 4 = 97
+        self.assertEqual(result.from_block, 97)
         self.assertEqual(result.to_block, 100)
         self.assertEqual(cursor.last_scanned_block, 100)
         self.assertEqual(cursor.last_safe_block, 94)
@@ -286,11 +380,11 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
         )
-        # reorg_lookback = 6, 第一轮 bootstrap 到 100: from = 100+1-6 = 95
-        self.assertEqual(first.from_block, 95)
+        # erc20 replay_blocks = 4, 第一轮 bootstrap 到 100: from = 100+1-4 = 97
+        self.assertEqual(first.from_block, 97)
         self.assertEqual(first.to_block, 100)
-        # 第二轮: last_scanned=100, from = 100+1-6 = 95
-        self.assertEqual(second.from_block, 95)
+        # 第二轮: last_scanned=100, from = 100+1-4 = 97
+        self.assertEqual(second.from_block, 97)
         self.assertEqual(second.to_block, 110)
         self.assertEqual(cursor.last_scanned_block, 110)
 
@@ -571,8 +665,8 @@ class EvmErc20ScannerTests(TestCase):
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
         )
-        # reorg_lookback = max(6, 6) = 6, from_block = 20 + 1 - 6 = 15
-        self.assertEqual(result.from_block, 15)
+        # native replay_blocks = 4, from_block = 20 + 1 - 4 = 17
+        self.assertEqual(result.from_block, 17)
         self.assertEqual(result.to_block, 20)
         self.assertEqual(cursor.last_scanned_block, 20)
         self.assertEqual(cursor.last_safe_block, 14)
@@ -728,7 +822,7 @@ class EvmErc20ScannerTests(TestCase):
             ]
         )
         get_full_block_mock.side_effect = lambda *, block_number: (
-            repeated_block if block_number == 8 else self._build_native_block(txs=[])
+            repeated_block if block_number == 10 else self._build_native_block(txs=[])
         )
 
         first = EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=12)
@@ -804,44 +898,6 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(cursor.last_scanned_block, 0)
         self.assertEqual(cursor.last_error, "node unreachable")
         self.assertIsNotNone(cursor.last_error_at)
-
-    def test_compute_scan_window_returns_empty_when_latest_block_is_zero(self):
-        # latest_block=0 表示链尚未出块或 RPC 返回异常值，扫描窗口应为空。
-        cursor = EvmScanCursor(last_scanned_block=0)
-        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
-            cursor=cursor,
-            latest_block=0,
-            confirm_block_count=6,
-            batch_size=100,
-        )
-        self.assertGreater(from_block, to_block)
-
-    def test_compute_scan_window_returns_empty_when_fully_caught_up(self):
-        # 游标已追平链头时，窗口仅覆盖未确认区域（safe_height 以上），不重扫已确认块。
-        cursor = EvmScanCursor(last_scanned_block=100)
-        from_block, to_block = EvmErc20TransferScanner._compute_scan_window(
-            cursor=cursor,
-            latest_block=100,
-            confirm_block_count=6,
-            batch_size=100,
-        )
-        # reorg_lookback = max(6, 6) = 6, from_block = 100 + 1 - 6 = 95
-        self.assertEqual(from_block, 95)
-        self.assertEqual(to_block, 100)
-
-    def test_native_compute_scan_window_must_still_progress_when_far_behind(self):
-        # 当原生币游标明显落后于链头时，窗口可以回退重扫，但本轮必须有净推进。
-        # 否则会反复扫描同一段 [last_scanned - lookback + 1, last_scanned] 区间，游标永远卡住。
-        cursor = EvmScanCursor(last_scanned_block=10_516_050)
-        from_block, to_block = EvmNativeDirectScanner._compute_scan_window(
-            cursor=cursor,
-            latest_block=10_516_343,
-            confirm_block_count=10,
-            batch_size=12,
-        )
-        # reorg_lookback = max(10, 6) = 10, from_block = 10_516_050 + 1 - 10 = 10_516_041
-        self.assertEqual(from_block, 10_516_041)
-        self.assertGreater(to_block, cursor.last_scanned_block)
 
     def _create_project_id(self) -> int:
         project = Project.objects.create(

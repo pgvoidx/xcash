@@ -5,15 +5,23 @@ from config.celery import EVM_NATIVE_SCAN_SCHEDULE_SECONDS
 from config.celery import app
 from config.celery import evm_tasks
 from evm.scanner.constants import DEFAULT_NATIVE_SCAN_BATCH_SIZE
+from evm.scanner.constants import DEFAULT_ERC20_SCAN_REPLAY_BLOCKS
+from evm.scanner.constants import DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS
 
 
 class EvmScannerDefaultsTests(TestCase):
     def test_native_scan_uses_expected_default_batch_size(self):
         self.assertEqual(DEFAULT_NATIVE_SCAN_BATCH_SIZE, 16)
 
-    def test_evm_scanner_schedules_use_split_intervals(self):
+    def test_erc20_scan_uses_small_fixed_replay_window(self):
+        self.assertEqual(DEFAULT_ERC20_SCAN_REPLAY_BLOCKS, 4)
+
+    def test_native_scan_uses_small_fixed_replay_window(self):
+        self.assertEqual(DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS, 4)
+
+    def test_evm_scanner_schedules_are_split_by_scan_type(self):
         self.assertEqual(EVM_ERC20_SCAN_SCHEDULE_SECONDS, 10)
-        self.assertEqual(EVM_NATIVE_SCAN_SCHEDULE_SECONDS, 15)
+        self.assertEqual(EVM_NATIVE_SCAN_SCHEDULE_SECONDS, 10)
         self.assertEqual(
             evm_tasks["scan_active_evm_erc20_chains"]["task"],
             "evm.tasks.scan_active_evm_erc20_chains",

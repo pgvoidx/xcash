@@ -70,7 +70,7 @@ evm_tasks = {
         "schedule": EVM_ERC20_SCAN_SCHEDULE_SECONDS,
     },
     "scan_active_evm_native_chains": {
-        # 原生币直转需要逐块拉完整交易列表，单独用更低频率降低 BSC 等链的 RPC 消耗。
+        # 原生币直转需要逐块拉完整交易列表，单独调度便于按链和 RPC 能力独立调优。
         "task": "evm.tasks.scan_active_evm_native_chains",
         "schedule": EVM_NATIVE_SCAN_SCHEDULE_SECONDS,
     },
