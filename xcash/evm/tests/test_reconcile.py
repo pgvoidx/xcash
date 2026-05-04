@@ -305,6 +305,7 @@ class EvmScanBlocksForReconcileTests(TestCase):
             native_coin=self.native,
             confirm_block_count=6,
             active=True,
+            open_native_scanner=True,
             latest_block_number=500,
         )
         self.wallet = Wallet.objects.create()
@@ -319,12 +320,15 @@ class EvmScanBlocksForReconcileTests(TestCase):
             ),
         )
         # 固定 cursor，断言复扫前后不发生推进。
-        self.cursor = EvmScanCursor.objects.create(
+        self.cursor = EvmScanCursor.objects.get(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        )
+        EvmScanCursor.objects.filter(pk=self.cursor.pk).update(
             last_scanned_block=100,
             last_safe_block=94,
         )
+        self.cursor.refresh_from_db()
 
     @staticmethod
     def _native_tx(*, from_address: str, to_address: str, value: int, tx_hash_hex: str) -> dict:
@@ -484,6 +488,35 @@ class EvmScanBlocksForReconcileTests(TestCase):
         self.assertEqual(result.observed_erc20, 5)
         self.assertEqual(result.created_native, 3)
         self.assertEqual(result.created_erc20, 3)
+
+    @patch(
+        "evm.scanner.service.EvmErc20TransferScanner.scan_range_without_cursor",
+    )
+    @patch(
+        "evm.scanner.service.EvmNativeDirectScanner.scan_range_without_cursor",
+    )
+    def test_reconcile_skips_native_scan_when_chain_native_scanner_is_closed(
+        self,
+        native_scan_mock,
+        erc20_scan_mock,
+    ):
+        from evm.scanner.service import EvmChainScannerService
+
+        self.chain.open_native_scanner = False
+        self.chain.save(update_fields=["open_native_scanner"])
+        erc20_scan_mock.return_value = ([object()], 1)
+
+        result = EvmChainScannerService.scan_blocks_for_reconcile(
+            chain=self.chain,
+            block_numbers={10},
+        )
+
+        native_scan_mock.assert_not_called()
+        erc20_scan_mock.assert_called_once()
+        self.assertEqual(result.observed_native, 0)
+        self.assertEqual(result.created_native, 0)
+        self.assertEqual(result.observed_erc20, 1)
+        self.assertEqual(result.created_erc20, 1)
 
 
 def Crypto_create(name: str, symbol: str, coingecko_id: str):

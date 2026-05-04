@@ -44,6 +44,7 @@ class EvmChainScannerServiceTests(TestCase):
             rpc="http://localhost:8545",
             native_coin=self.native,
             active=True,
+            open_native_scanner=True,
             latest_block_number=88,
         )
 
@@ -54,9 +55,10 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
-        EvmScanCursor.objects.create(
+        EvmScanCursor.objects.filter(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        ).update(
             enabled=False,
         )
         erc20_scan_mock.return_value = EvmErc20ScanResult(
@@ -105,7 +107,7 @@ class EvmChainScannerServiceTests(TestCase):
 
     @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
     @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
-    def test_scan_chain_defaults_to_enabled_when_cursor_missing(
+    def test_scan_chain_scans_native_when_chain_native_scanner_is_open(
         self,
         native_scan_mock,
         erc20_scan_mock,
@@ -131,6 +133,78 @@ class EvmChainScannerServiceTests(TestCase):
         erc20_scan_mock.assert_called_once_with(chain=self.chain)
         self.assertEqual(result.native.created_transfers, 1)
         self.assertEqual(result.erc20.created_transfers, 1)
+
+    @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
+    @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
+    def test_scan_chain_skips_native_when_chain_native_scanner_is_closed_by_default(
+        self,
+        native_scan_mock,
+        erc20_scan_mock,
+    ):
+        native = Crypto.objects.create(
+            name="Ethereum Native Closed",
+            symbol="ETHNC",
+            coingecko_id="ethereum-native-closed",
+        )
+        chain = Chain.objects.create(
+            code="eth-native-closed",
+            name="Ethereum Native Closed",
+            type=ChainType.EVM,
+            chain_id=20002,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+            latest_block_number=99,
+        )
+        erc20_scan_mock.return_value = EvmErc20ScanResult(
+            from_block=1,
+            to_block=2,
+            latest_block=99,
+            observed_logs=3,
+            created_transfers=1,
+        )
+
+        result = EvmChainScannerService.scan_chain(chain=chain)
+
+        native_scan_mock.assert_not_called()
+        erc20_scan_mock.assert_called_once_with(chain=chain)
+        self.assertEqual(result.native.created_transfers, 0)
+        self.assertEqual(result.native.latest_block, 99)
+        self.assertEqual(result.erc20.created_transfers, 1)
+
+    def test_closing_chain_native_scanner_deletes_native_cursor(self):
+        EvmScanCursor.objects.filter(
+            chain=self.chain,
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        ).update(
+            last_scanned_block=88,
+            last_safe_block=80,
+        )
+
+        self.chain.open_native_scanner = False
+        self.chain.save(update_fields=["open_native_scanner"])
+
+        self.assertFalse(
+            EvmScanCursor.objects.filter(
+                chain=self.chain,
+                scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+            ).exists()
+        )
+
+    def test_opening_chain_native_scanner_creates_fresh_native_cursor(self):
+        self.chain.open_native_scanner = False
+        self.chain.save(update_fields=["open_native_scanner"])
+
+        self.chain.open_native_scanner = True
+        self.chain.save(update_fields=["open_native_scanner"])
+
+        cursor = EvmScanCursor.objects.get(
+            chain=self.chain,
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        )
+        self.assertEqual(cursor.last_scanned_block, 0)
+        self.assertEqual(cursor.last_safe_block, 0)
+        self.assertTrue(cursor.enabled)
 
     @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
     @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")

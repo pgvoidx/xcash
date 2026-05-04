@@ -616,10 +616,23 @@ class EvmErc20ScannerTests(TestCase):
         delay_mock,
     ):
         self._create_scan_dispatch_ignored_chains()
+        self.chain.open_native_scanner = True
+        self.chain.save(update_fields=["open_native_scanner"])
 
         scan_active_evm_native_chains()
 
         delay_mock.assert_called_once_with(self.chain.pk)
+
+    @patch("evm.tasks.scan_evm_native_chain.delay")
+    def test_scan_active_evm_native_chains_skips_closed_native_scanner(
+        self,
+        delay_mock,
+    ):
+        self._create_scan_dispatch_ignored_chains()
+
+        scan_active_evm_native_chains()
+
+        delay_mock.assert_not_called()
 
     def test_watch_set_includes_recipient_addresses(self):
         # 收币地址同样属于系统观察集，后续 ERC20 扫描需要能命中这些地址。

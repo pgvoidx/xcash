@@ -52,6 +52,7 @@ class ChainAdmin(ModelAdmin):
             {
                 "fields": (
                     "chain_id",
+                    "open_native_scanner",
                     "base_transfer_gas",
                     "erc20_transfer_gas",
                     "evm_log_max_block_range",

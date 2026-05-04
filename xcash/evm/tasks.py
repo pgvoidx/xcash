@@ -276,6 +276,7 @@ def scan_active_evm_native_chains() -> None:
     for chain_pk in Chain.objects.filter(
         active=True,
         type=ChainType.EVM,
+        open_native_scanner=True,
     ).values_list("pk", flat=True):
         scan_evm_native_chain.delay(chain_pk)
 
