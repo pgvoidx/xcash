@@ -26,7 +26,11 @@ class EvmScannerRpcClient:
             return int(self.chain.get_latest_block_number)
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
-                f"获取最新区块失败: chain={self.chain.code}"
+                self._format_rpc_error(
+                    "获取最新区块失败",
+                    method="eth_blockNumber",
+                    exc=exc,
+                )
             ) from exc
 
     def get_transfer_logs(
@@ -79,7 +83,12 @@ class EvmScannerRpcClient:
             )
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
-                f"获取 ERC20 日志失败: chain={self.chain.code} from={from_block} to={to_block}"
+                self._format_rpc_error(
+                    "获取 ERC20 日志失败",
+                    method="eth_getLogs",
+                    exc=exc,
+                    context=f"from={from_block} to={to_block}",
+                )
             ) from exc
 
     def get_block_timestamp(self, *, block_number: int) -> int:
@@ -91,7 +100,12 @@ class EvmScannerRpcClient:
             return int(block["timestamp"])
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
-                f"获取区块时间失败: chain={self.chain.code} block={block_number}"
+                self._format_rpc_error(
+                    "获取区块时间失败",
+                    method="eth_getBlockByNumber",
+                    exc=exc,
+                    context=f"block={block_number}",
+                )
             ) from exc
 
     def get_full_block(self, *, block_number: int) -> dict[str, Any]:
@@ -104,7 +118,12 @@ class EvmScannerRpcClient:
             )
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
-                f"获取完整区块失败: chain={self.chain.code} block={block_number}"
+                self._format_rpc_error(
+                    "获取完整区块失败",
+                    method="eth_getBlockByNumber",
+                    exc=exc,
+                    context=f"block={block_number}",
+                )
             ) from exc
 
     def get_transaction_receipt_status(self, *, tx_hash: str) -> int | None:
@@ -112,7 +131,12 @@ class EvmScannerRpcClient:
             receipt = self.chain.w3.eth.get_transaction_receipt(tx_hash)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             raise EvmScannerRpcError(
-                f"获取交易回执失败: chain={self.chain.code} tx_hash={tx_hash}"
+                self._format_rpc_error(
+                    "获取交易回执失败",
+                    method="eth_getTransactionReceipt",
+                    exc=exc,
+                    context=f"tx_hash={tx_hash}",
+                )
             ) from exc
 
         if receipt is None:
@@ -148,3 +172,30 @@ class EvmScannerRpcClient:
     def _mark_chain_as_poa(self) -> None:
         self.chain.__class__.objects.filter(pk=self.chain.pk).update(is_poa=True)
         self.chain.is_poa = True
+
+    def _format_rpc_error(
+        self,
+        summary: str,
+        *,
+        method: str,
+        exc: Exception,
+        context: str = "",
+    ) -> str:
+        raw_error = self._format_raw_exception(exc)
+        parts = [
+            f"{summary}: rpc={method}",
+            f"error={exc.__class__.__name__}: {raw_error}",
+            f"chain={self.chain.code}",
+        ]
+        if context:
+            parts.append(context)
+        return " ".join(parts)
+
+    @staticmethod
+    def _format_raw_exception(exc: Exception) -> str:
+        raw_error = " ".join(str(exc).split())
+        if not raw_error:
+            raw_error = repr(exc)
+        if len(raw_error) > 160:
+            return f"{raw_error[:157]}..."
+        return raw_error

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.test import SimpleTestCase
 from django.test import TestCase
 from web3 import Web3
 from web3.exceptions import ExtraDataLengthError
@@ -10,6 +11,68 @@ from chains.models import Chain
 from chains.models import ChainType
 from currencies.models import Crypto
 from evm.scanner.rpc import EvmScannerRpcClient
+from evm.scanner.rpc import EvmScannerRpcError
+
+
+class EvmScannerRpcErrorMessageTests(SimpleTestCase):
+    def test_get_transfer_logs_error_includes_rpc_method_and_raw_reason(self):
+        # 游标 last_error 直接使用此异常文本；必须带上具体 RPC 方法和节点原始报错，
+        # 否则后台只能看到失败区块范围，无法判断是套餐限流、超时还是节点内部错误。
+        chain = SimpleNamespace(
+            code="bsc-mainnet",
+            evm_log_max_block_range=10,
+            w3=SimpleNamespace(
+                eth=SimpleNamespace(
+                    get_logs=Mock(
+                        side_effect=ValueError(
+                            {"code": -32005, "message": "limit exceeded: 5000 results"}
+                        )
+                    )
+                )
+            ),
+        )
+
+        with self.assertRaises(EvmScannerRpcError) as caught:
+            EvmScannerRpcClient(chain=chain).get_transfer_logs(
+                from_block=100,
+                to_block=109,
+                token_addresses=[
+                    Web3.to_checksum_address(
+                        "0x00000000000000000000000000000000000000aa"
+                    )
+                ],
+                topic0=Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)")),
+            )
+
+        message = str(caught.exception)
+        self.assertIn("获取 ERC20 日志失败", message)
+        self.assertIn("rpc=eth_getLogs", message)
+        self.assertIn("limit exceeded: 5000 results", message)
+        self.assertLess(message.index("rpc=eth_getLogs"), message.index("from=100"))
+        self.assertIn("rpc=eth_getLogs", message[:60])
+
+    def test_get_full_block_error_includes_rpc_method_and_raw_reason(self):
+        chain = SimpleNamespace(
+            code="bsc-mainnet",
+            w3=SimpleNamespace(
+                eth=SimpleNamespace(
+                    get_block=Mock(side_effect=TimeoutError("read timeout"))
+                )
+            ),
+        )
+
+        with self.assertRaises(EvmScannerRpcError) as caught:
+            EvmScannerRpcClient(chain=chain).get_full_block(block_number=9_586_911)
+
+        message = str(caught.exception)
+        self.assertIn("获取完整区块失败", message)
+        self.assertIn("rpc=eth_getBlockByNumber", message)
+        self.assertIn("read timeout", message)
+        self.assertLess(
+            message.index("rpc=eth_getBlockByNumber"),
+            message.index("block=9586911"),
+        )
+        self.assertIn("rpc=eth_getBlockByNumber", message[:60])
 
 
 class EvmScannerRpcClientTests(TestCase):
