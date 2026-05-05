@@ -1,5 +1,39 @@
 # Xcash API 对接文档
 
+## 链与币种代码表
+
+本文档用于查询调用 Xcash 接口时常用的 `chain` code 与 `crypto` symbol。
+
+### Chain Code
+
+| Chain                 | 接口 code             | 类型      | 原生币 symbol | Chain ID | 备注                               |
+|-----------------------|---------------------|---------|------------|----------|----------------------------------|
+| Ethereum              | `ethereum-mainnet`  | EVM     | `ETH`      | `1`      | 以太坊主网                            |
+| BSC / BNB Smart Chain | `bsc-mainnet`       | EVM     | `BNB`      | `56`     | BNB Smart Chain 主网               |
+| Polygon PoS           | `polygon-mainnet`   | EVM     | `POL`      | `137`    | Xcash 默认使用 `polygon-mainnet`     |
+| Base                  | `base-mainnet`      | EVM     | `ETH`      | `8453`   | Base 主网                          |
+| Arbitrum One          | `arbitrum-mainnet`  | EVM     | `ETH`      | `42161`  | 常用 L2，按 QuickNode slug 风格保留      |
+| Optimism              | `optimism-mainnet`  | EVM     | `ETH`      | `10`     | OP Mainnet                       |
+| Avalanche C-Chain     | `avalanche-mainnet` | EVM     | `AVAX`     | `43114`  | Avalanche EVM C-Chain            |
+| Tron                  | `tron-mainnet`      | Tron    | `TRX`      | -        | Tron 主网                          |
+| Bitcoin               | `bitcoin-mainnet`   | Bitcoin | `BTC`      | -        | Bitcoin 主网                       |
+| Solana                | `solana-mainnet`    | Solana  | `SOL`      | -        | 常见非 EVM 链；当前 Xcash 链引擎未建模 Solana |
+
+### Crypto Symbol
+
+Crypto 的调用标识直接使用 symbol。
+
+| Crypto                  | symbol | 默认 decimals | 常见用途                                | 备注                                  |
+|-------------------------|--------|-------------|-------------------------------------|-------------------------------------|
+| Ethereum                | `ETH`  | `18`        | Ethereum/Base/Arbitrum/Optimism 原生币 | 多条 EVM 链可共用 ETH 作为 gas token        |
+| BNB                     | `BNB`  | `18`        | BSC 原生币                             | BNB Smart Chain gas token           |
+| Polygon Ecosystem Token | `POL`  | `18`        | Polygon PoS 原生币                     | Polygon PoS 当前 gas token            |
+| Bitcoin                 | `BTC`  | `8`         | Bitcoin 原生币                         | UTXO 资产                             |
+| Tron                    | `TRX`  | `6`         | Tron 原生币                            | Tron gas/resource 相关资产              |
+| Solana                  | `SOL`  | `9`         | Solana 原生币                          | 当前 Xcash 链引擎未建模 Solana              |
+| Tether USD              | `USDT` | `6`         | 稳定币                                 | 不同链可能有链特定 decimals 覆盖，例如 BSC 常见为 18 |
+| USD Coin                | `USDC` | `6`         | 稳定币                                 | 不同链合约地址不同                           |
+| Dai                     | `DAI`  | `18`        | 稳定币                                 | 常见于 EVM 链                           |
 
 ---
 
@@ -618,21 +652,6 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 | `confirming` | 链上确认中 |
 | `completed` | 已完成 |
 | `expired` | 已超时 |
-
----
-
-## 支持的链码
-
-| 链码 | 链名 |
-|------|------|
-| `ethereum-mainnet` | Ethereum |
-| `bsc-mainnet` | BNB Smart Chain |
-| `polygon-mainnet` | Polygon |
-| `base-mainnet` | Base |
-| `tron-mainnet` | TRON |
-| `bitcoin-mainnet` | Bitcoin |
-
-> 实际可用链取决于项目配置。
 
 ---
 
