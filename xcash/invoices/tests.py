@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.db import IntegrityError
 from django.db import close_old_connections
 from django.db import connections
 from django.test import TestCase
 from django.test import TransactionTestCase
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory
 from web3 import Web3
@@ -526,6 +528,9 @@ class InvoiceDuplicateOutNoTests(TestCase):
 
 
 class InvoiceAllowedMethodsCapabilityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_available_methods_only_exposes_usdt_for_tron_invoice(self):
         project = Project.objects.create(
             name="Invoice Capability Project",
@@ -580,6 +585,93 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
 
         self.assertEqual(methods["USDT"], [tron_chain.code])
         self.assertNotIn("USDC", methods)
+
+    @override_settings(INTERNAL_API_TOKEN="xcash-saas-token")
+    def test_available_methods_filters_by_cached_saas_chain_crypto_whitelist(self):
+        project = Project.objects.create(
+            name="Invoice SaaS Allowed Methods Project",
+            wallet=Wallet.objects.create(),
+        )
+        eth_native = Crypto.objects.create(
+            name="Ethereum SaaS Allowed",
+            symbol="ETHSAASAM",
+            coingecko_id="ethereum-saas-allowed-methods",
+        )
+        bsc_native = Crypto.objects.create(
+            name="BNB SaaS Allowed",
+            symbol="BNBSAASAM",
+            coingecko_id="bnb-saas-allowed-methods",
+        )
+        eth_chain = Chain.objects.create(
+            name="Ethereum SaaS Allowed",
+            code="eth-saas-allowed-methods",
+            type=ChainType.EVM,
+            native_coin=eth_native,
+            chain_id=9911,
+            rpc="http://eth.invalid",
+            active=True,
+        )
+        bsc_chain = Chain.objects.create(
+            name="BSC SaaS Allowed",
+            code="bsc-saas-allowed-methods",
+            type=ChainType.EVM,
+            native_coin=bsc_native,
+            chain_id=9912,
+            rpc="http://bsc.invalid",
+            active=True,
+        )
+        usdt = Crypto.objects.create(
+            name="USDT SaaS Allowed",
+            symbol="USDTSAASAM",
+            coingecko_id="usdt-saas-allowed-methods",
+            decimals=6,
+        )
+        usdc = Crypto.objects.create(
+            name="USDC SaaS Denied",
+            symbol="USDCSAASAM",
+            coingecko_id="usdc-saas-allowed-methods",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=eth_chain,
+            address="0x0000000000000000000000000000000000009911",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=bsc_chain,
+            address="0x0000000000000000000000000000000000009912",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=usdc,
+            chain=eth_chain,
+            address="0x0000000000000000000000000000000000009913",
+            decimals=6,
+        )
+        RecipientAddress.objects.create(
+            name="evm-pay",
+            project=project,
+            chain_type=ChainType.EVM,
+            address="0x0000000000000000000000000000000000009914",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+        cache.set(
+            f"saas:permission:{project.appid}",
+            {
+                "frozen": False,
+                "enable_deposit": True,
+                "allowed_chain_codes": [eth_chain.code],
+                "allowed_crypto_symbols": [usdt.symbol],
+            },
+            None,
+        )
+
+        methods = Invoice.available_methods(project)
+
+        self.assertEqual(set(methods), {usdt.symbol})
+        self.assertEqual(methods[usdt.symbol], [eth_chain.code])
 
 
 class InvoiceConfirmDropStatusTests(TestCase):
@@ -1008,6 +1100,99 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         mock_check.assert_called_once_with(
             appid=self.project.appid,
             action="deposit",
+        )
+
+    @patch("invoices.viewsets.check_saas_permission")
+    def test_create_checks_each_requested_method(self, mock_check):
+        """充值账单创建时，每个 methods 链币组合都必须经过 SaaS 白名单校验。"""
+        serializer_stub = self._make_serializer_stub()
+        serializer_stub.validated_data["methods"] = {
+            "USDT": ["ethereum-mainnet", "bsc-mainnet"],
+            "USDC": ["ethereum-mainnet"],
+        }
+
+        with (
+            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch(
+                "invoices.viewsets.Invoice.objects.create",
+                return_value=Mock(
+                    sys_no="inv-0002",
+                    out_no="perm-inv-order",
+                    project=self.project,
+                    status="waiting",
+                ),
+            ),
+            patch("invoices.viewsets.InvoiceService.initialize_invoice"),
+            patch(
+                "invoices.viewsets.InvoiceDisplaySerializer",
+                return_value=Mock(data={}),
+            ),
+        ):
+            InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+
+        mock_check.assert_any_call(appid=self.project.appid, action="deposit")
+        mock_check.assert_any_call(
+            appid=self.project.appid,
+            action="deposit",
+            chain_code="ethereum-mainnet",
+            crypto_symbol="USDT",
+        )
+        mock_check.assert_any_call(
+            appid=self.project.appid,
+            action="deposit",
+            chain_code="bsc-mainnet",
+            crypto_symbol="USDT",
+        )
+        mock_check.assert_any_call(
+            appid=self.project.appid,
+            action="deposit",
+            chain_code="ethereum-mainnet",
+            crypto_symbol="USDC",
+        )
+        self.assertEqual(mock_check.call_count, 4)
+
+    @patch("invoices.viewsets.check_saas_permission")
+    def test_select_method_checks_selected_chain_and_crypto(self, mock_check):
+        """支付页选择支付方式时，最终选中的链币组合必须经过 SaaS 白名单校验。"""
+        invoice = Mock(
+            status=InvoiceStatus.WAITING,
+            expires_at=timezone.now() + timedelta(minutes=10),
+            methods={"USDT": ["ethereum-mainnet"]},
+            project=Mock(appid=self.project.appid),
+        )
+        serializer_stub = SimpleNamespace(
+            is_valid=Mock(return_value=True),
+            validated_data={"crypto": "USDT", "chain": "ethereum-mainnet"},
+            errors={},
+        )
+        crypto = Mock(symbol="USDT")
+        chain = Mock(code="ethereum-mainnet")
+
+        with (
+            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch.object(InvoiceViewSet, "get_object", return_value=invoice),
+            patch("invoices.viewsets.CryptoService.get_by_symbol", return_value=crypto),
+            patch("invoices.viewsets.ChainService.get_by_code", return_value=chain),
+            patch(
+                "invoices.viewsets.InvoiceDisplaySerializer",
+                return_value=Mock(data={}),
+            ),
+        ):
+            InvoiceViewSet.as_view({"post": "select_method"})(
+                APIRequestFactory().post(
+                    "/v1/invoice/inv-0002/select-method",
+                    {"crypto": "USDT", "chain": "ethereum-mainnet"},
+                    format="json",
+                    HTTP_XC_APPID=self.project.appid,
+                ),
+                sys_no="inv-0002",
+            )
+
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="deposit",
+            chain_code="ethereum-mainnet",
+            crypto_symbol="USDT",
         )
 
     @patch("invoices.viewsets.check_saas_permission")

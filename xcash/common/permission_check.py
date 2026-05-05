@@ -49,12 +49,20 @@ def _schedule_refresh(appid: str) -> None:
         _refresh_saas_permission.delay(appid=appid)
 
 
-def check_saas_permission(*, appid: str, action: str) -> None:
+def check_saas_permission(
+    *,
+    appid: str,
+    action: str,
+    chain_code: str | None = None,
+    crypto_symbol: str | None = None,
+) -> None:
     """对锁定操作做权限校验。
 
     Args:
         appid: xcash Project appid
         action: 'deposit' / 'withdrawal' 等，对应 SaaS 返回的 enable_<action>
+        chain_code: 可选，Chain.code。传入时会按 SaaS 返回的 allowed_chain_codes 校验
+        crypto_symbol: 可选，Crypto.symbol。传入时会按 SaaS 返回的 allowed_crypto_symbols 校验
 
     Raises:
         APIError: 该 tier 未开放该功能 / 用户已 frozen / appid 缺失
@@ -88,6 +96,69 @@ def check_saas_permission(*, appid: str, action: str) -> None:
     feature_key = f"enable_{action}"
     if not perm.get(feature_key, False):
         raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=action)
+
+    allowed_chain_codes = perm.get("allowed_chain_codes")
+    if (
+        chain_code is not None
+        and allowed_chain_codes is not None
+        and chain_code not in allowed_chain_codes
+    ):
+        raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=chain_code)
+
+    allowed_crypto_symbols = perm.get("allowed_crypto_symbols")
+    if (
+        crypto_symbol is not None
+        and allowed_crypto_symbols is not None
+        and crypto_symbol not in allowed_crypto_symbols
+    ):
+        raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=crypto_symbol)
+
+
+def filter_saas_allowed_methods(
+    *,
+    appid: str,
+    methods: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """按 SaaS 缓存的 Tier 链币白名单收敛可用支付方式。
+
+    与 check_saas_permission 保持同样的可用性策略：自托管、冷缓存、旧缓存缺字段时
+    fail-open；命中缓存且包含白名单时只返回交集。
+    """
+    if not settings.INTERNAL_API_TOKEN or not appid:
+        return {symbol: list(chain_codes) for symbol, chain_codes in methods.items()}
+
+    perm = cache.get(_cache_key(appid))
+    if perm is None:
+        _schedule_refresh(appid)
+        return {symbol: list(chain_codes) for symbol, chain_codes in methods.items()}
+
+    fetched_at = perm.get("_fetched_at", 0)
+    if time.time() - fetched_at > REFRESH_AFTER:
+        _schedule_refresh(appid)
+
+    if perm.get("frozen") or not perm.get("enable_deposit", False):
+        return {}
+
+    allowed_chain_codes = perm.get("allowed_chain_codes")
+    allowed_crypto_symbols = perm.get("allowed_crypto_symbols")
+    allowed_crypto_set = (
+        {str(symbol).upper() for symbol in allowed_crypto_symbols}
+        if allowed_crypto_symbols is not None
+        else None
+    )
+
+    filtered: dict[str, list[str]] = {}
+    for symbol, chain_codes in methods.items():
+        if allowed_crypto_set is not None and symbol.upper() not in allowed_crypto_set:
+            continue
+        available_chain_codes = [
+            code
+            for code in chain_codes
+            if allowed_chain_codes is None or code in allowed_chain_codes
+        ]
+        if available_chain_codes:
+            filtered[symbol] = available_chain_codes
+    return filtered
 
 
 @shared_task(

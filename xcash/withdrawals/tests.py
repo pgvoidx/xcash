@@ -2338,7 +2338,7 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
 
     @patch("withdrawals.viewsets.check_saas_permission")
     def test_create_calls_permission_check_with_correct_args(self, mock_check):
-        """提币创建时必须以正确的 appid 和 action='withdrawal' 调用权限校验。"""
+        """提币创建时必须做功能级和链币级 SaaS 权限校验。"""
         serializer_stub = self._make_serializer_stub()
         select_for_update_manager = Mock()
         select_for_update_manager.get.return_value = self.project
@@ -2361,10 +2361,17 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
         ):
             WithdrawalViewSet.as_view({"post": "create"})(self._make_request())
 
-        mock_check.assert_called_once_with(
+        mock_check.assert_any_call(
             appid=self.project.appid,
             action="withdrawal",
         )
+        mock_check.assert_any_call(
+            appid=self.project.appid,
+            action="withdrawal",
+            chain_code=self.chain.code,
+            crypto_symbol=self.crypto.symbol,
+        )
+        self.assertEqual(mock_check.call_count, 2)
 
     @patch("withdrawals.viewsets.check_saas_permission")
     def test_create_blocked_when_feature_not_enabled(self, mock_check):

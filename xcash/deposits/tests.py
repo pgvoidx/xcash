@@ -2742,11 +2742,18 @@ class DepositAddressPermissionCheckTests(TestCase):
 
     @patch("deposits.viewsets.check_saas_permission")
     def test_address_calls_permission_check_with_correct_args(self, mock_check):
-        """正常请求触发 check_saas_permission(appid, action='deposit')。"""
+        """正常请求触发功能级和链币级 SaaS 权限校验。"""
         with patch("deposits.viewsets.DepositAddress.get_address", return_value="0xaddr"):
             DepositViewSet.as_view({"get": "address"})(self._make_request())
 
-        mock_check.assert_called_once_with(appid=self.project.appid, action="deposit")
+        mock_check.assert_any_call(appid=self.project.appid, action="deposit")
+        mock_check.assert_any_call(
+            appid=self.project.appid,
+            action="deposit",
+            chain_code=self.chain.code,
+            crypto_symbol=self.native.symbol,
+        )
+        self.assertEqual(mock_check.call_count, 2)
 
     @patch("deposits.viewsets.check_saas_permission")
     def test_address_returns_403_when_feature_not_enabled(self, mock_check):

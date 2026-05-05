@@ -12,6 +12,7 @@ logger = structlog.get_logger()
 
 from common.fields import AddressField
 from common.fields import SysNoField
+from common.permission_check import filter_saas_allowed_methods
 from currencies.service import CryptoService
 from currencies.service import FiatService
 from projects.models import Project
@@ -194,7 +195,10 @@ class Invoice(models.Model):
             ]
             if available_chain_codes:
                 available_methods[symbol] = available_chain_codes
-        return available_methods
+        return filter_saas_allowed_methods(
+            appid=project.appid,
+            methods=available_methods,
+        )
 
     @db_transaction.atomic
     def select_method(self, crypto: "Crypto", chain: "Chain"):

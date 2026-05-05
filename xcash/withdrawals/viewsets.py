@@ -53,6 +53,12 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
         if not serializer.is_valid():
             raise APIError(ErrorCode.PARAMETER_ERROR, detail=serializer.errors)
         validated_data = serializer.validated_data
+        check_saas_permission(
+            appid=request.headers.get(APPID_HEADER),
+            action="withdrawal",
+            chain_code=validated_data["chain"],
+            crypto_symbol=validated_data["crypto"],
+        )
 
         project = Project.retrieve(appid=request.headers.get(APPID_HEADER))
         if project is None:

@@ -80,6 +80,12 @@ class DepositViewSet(viewsets.GenericViewSet):
             crypto=crypto,
         ):
             raise APIError(ErrorCode.INVALID_CHAIN)
+        check_saas_permission(
+            appid=appid,
+            action="deposit",
+            chain_code=chain.code,
+            crypto_symbol=crypto.symbol,
+        )
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
 

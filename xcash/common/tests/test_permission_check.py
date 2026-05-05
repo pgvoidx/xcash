@@ -113,6 +113,93 @@ class CheckSaasPermissionTest(TestCase):
             check_saas_permission(appid="XC-d", action="withdrawal")
         self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
 
+    def test_allowed_chain_and_crypto_pass(self):
+        """缓存里 chain/token 白名单同时命中 → 放行。"""
+
+        cache.set(
+            "saas:permission:XC-allowed",
+            {
+                "frozen": False,
+                "enable_deposit": True,
+                "allowed_chain_codes": ["ethereum-mainnet", "bsc-mainnet"],
+                "allowed_crypto_symbols": ["USDT", "USDC"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        check_saas_permission(
+            appid="XC-allowed",
+            action="deposit",
+            chain_code="ethereum-mainnet",
+            crypto_symbol="USDT",
+        )
+
+    def test_disallowed_chain_denied(self):
+        """缓存里 chain 不在白名单 → 拒绝该 chain/token 组合。"""
+
+        cache.set(
+            "saas:permission:XC-chain-denied",
+            {
+                "frozen": False,
+                "enable_deposit": True,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT", "USDC"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        with self.assertRaises(APIError) as ctx:
+            check_saas_permission(
+                appid="XC-chain-denied",
+                action="deposit",
+                chain_code="bsc-mainnet",
+                crypto_symbol="USDT",
+            )
+        self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+
+    def test_disallowed_crypto_denied(self):
+        """缓存里 crypto 不在白名单 → 拒绝该 chain/token 组合。"""
+
+        cache.set(
+            "saas:permission:XC-crypto-denied",
+            {
+                "frozen": False,
+                "enable_withdrawal": True,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        with self.assertRaises(APIError) as ctx:
+            check_saas_permission(
+                appid="XC-crypto-denied",
+                action="withdrawal",
+                chain_code="ethereum-mainnet",
+                crypto_symbol="USDC",
+            )
+        self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+
+    def test_missing_chain_token_args_keeps_feature_only_check(self):
+        """未传 chain/token 时保持旧行为，只校验功能开关。"""
+
+        cache.set(
+            "saas:permission:XC-feature-only",
+            {
+                "frozen": False,
+                "enable_deposit": True,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        check_saas_permission(appid="XC-feature-only", action="deposit")
+
     @override_settings(INTERNAL_API_TOKEN="")
     @patch("common.permission_check._refresh_saas_permission.delay")
     def test_self_hosted_pass_through_no_refresh(self, mock_delay):
