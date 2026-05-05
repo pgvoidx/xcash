@@ -35,7 +35,7 @@ from tron.codec import TronAddressCodec
 from tron.models import TronWatchCursor
 
 
-@override_settings(TRON_RPC_TIMEOUT=3.0, TRON_API_KEY="tron-key")
+@override_settings(TRON_RPC_TIMEOUT=3.0)
 class TronHttpClientTests(SimpleTestCase):
     @patch("tron.client.httpx.get")
     def test_get_latest_solid_block_number_reads_block_header_number(self, get_mock):
@@ -44,20 +44,32 @@ class TronHttpClientTests(SimpleTestCase):
         }
         get_mock.return_value.raise_for_status.return_value = None
 
-        chain = SimpleNamespace(rpc="https://api.trongrid.io", code="tron-mainnet")
+        chain = SimpleNamespace(
+            rpc="https://tron-mainnet.core.chainstack.com/token",
+            code="tron-mainnet",
+            tron_api_key="",
+        )
         client = TronHttpClient(chain=chain)
 
         latest_block = client.get_latest_solid_block_number()
 
         self.assertEqual(latest_block, 123456)
-        get_mock.assert_called_once()
+        call_args, _kwargs = get_mock.call_args
+        self.assertEqual(
+            call_args[0],
+            "https://api.trongrid.io/walletsolidity/getnowblock",
+        )
 
     @patch("tron.client.httpx.post")
     def test_get_transaction_info_by_id_posts_tx_hash(self, post_mock):
         post_mock.return_value.json.return_value = {"id": "a" * 64}
         post_mock.return_value.raise_for_status.return_value = None
 
-        chain = SimpleNamespace(rpc="https://api.trongrid.io", code="tron-mainnet")
+        chain = SimpleNamespace(
+            rpc="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="",
+        )
         client = TronHttpClient(chain=chain)
 
         payload = client.get_transaction_info_by_id("a" * 64)
@@ -74,7 +86,7 @@ class TronHttpClientTests(SimpleTestCase):
         get_mock.return_value.json.return_value = {"data": [], "meta": {}}
         get_mock.return_value.raise_for_status.return_value = None
 
-        chain = SimpleNamespace(rpc="https://api.trongrid.io")
+        chain = SimpleNamespace(rpc="https://api.trongrid.io", tron_api_key="tron-key")
         client = TronHttpClient(chain=chain)
         client.list_confirmed_trc20_history(
             address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
@@ -95,7 +107,11 @@ class TronHttpClientTests(SimpleTestCase):
         get_mock.return_value.json.return_value = {"data": [], "meta": {}}
         get_mock.return_value.raise_for_status.return_value = None
 
-        chain = SimpleNamespace(rpc="https://api.trongrid.io", code="tron-mainnet")
+        chain = SimpleNamespace(
+            rpc="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="tron-key",
+        )
         client = TronHttpClient(chain=chain)
         client.list_confirmed_contract_events(
             contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
@@ -119,7 +135,11 @@ class TronHttpClientTests(SimpleTestCase):
     def test_list_confirmed_contract_events_wraps_http_error(self, get_mock):
         get_mock.side_effect = httpx.HTTPError("boom")
 
-        chain = SimpleNamespace(rpc="https://api.trongrid.io", code="tron-mainnet")
+        chain = SimpleNamespace(
+            rpc="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="tron-key",
+        )
         client = TronHttpClient(chain=chain)
 
         with self.assertRaisesMessage(
@@ -172,6 +192,27 @@ class TronWatchCursorTests(TestCase):
         )
         self.assertTrue(cursor.enabled)
         self.assertEqual(cursor.last_scanned_block, 0)
+
+    def test_tron_chain_save_clears_generic_rpc(self):
+        trx = Crypto.objects.create(
+            name="TRON Cursor RPC Clear",
+            symbol="TRX-CURSOR-RPC-CLEAR",
+            coingecko_id="tron-cursor-rpc-clear",
+            decimals=6,
+        )
+
+        chain = Chain.objects.create(
+            name="Tron Cursor RPC Clear",
+            code="tron-cursor-rpc-clear",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="https://api.trongrid.io",
+            tron_api_key="  tron-key  ",
+        )
+
+        chain.refresh_from_db()
+        self.assertEqual(chain.rpc, "")
+        self.assertEqual(chain.tron_api_key, "tron-key")
 
     def test_cursor_is_unique_per_chain_and_contract_address(self):
         trx = Crypto.objects.create(
@@ -992,6 +1033,7 @@ class TronTaskTests(TestCase):
             name="Tron Log",
             type=ChainType.TRON,
             rpc="https://api.trongrid.io",
+            tron_api_key="tron-key",
             native_coin=native,
             active=True,
         )
@@ -1013,6 +1055,32 @@ class TronTaskTests(TestCase):
             created_transfers=2,
         )
 
+    @patch("tron.tasks.TronUsdtPaymentScanner.scan_chain")
+    def test_scan_tron_chain_skips_when_api_key_is_missing(
+        self,
+        scan_chain_mock,
+    ):
+        from tron.tasks import scan_tron_chain
+
+        native = Crypto.objects.create(
+            name="Tron Task Missing Key Native",
+            symbol="TRX-TRON-TASK-MISSING-KEY",
+            coingecko_id="tron-task-missing-key-native",
+            decimals=6,
+        )
+        tron_chain = Chain.objects.create(
+            code="tron-missing-key",
+            name="Tron Missing Key",
+            type=ChainType.TRON,
+            rpc="https://api.trongrid.io",
+            native_coin=native,
+            active=True,
+        )
+
+        scan_tron_chain.run(tron_chain.pk)
+
+        scan_chain_mock.assert_not_called()
+
     @patch("tron.tasks.scan_tron_chain.delay")
     def test_scan_active_tron_chains_only_dispatches_active_tron_chains(
         self,
@@ -1029,6 +1097,15 @@ class TronTaskTests(TestCase):
         tron_chain = Chain.objects.create(
             code="tron-active",
             name="Tron Active",
+            type=ChainType.TRON,
+            rpc="https://api.trongrid.io",
+            tron_api_key="tron-key",
+            native_coin=native,
+            active=True,
+        )
+        Chain.objects.create(
+            code="tron-no-key",
+            name="Tron No Key",
             type=ChainType.TRON,
             rpc="https://api.trongrid.io",
             native_coin=native,

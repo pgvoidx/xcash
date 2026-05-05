@@ -16,6 +16,9 @@ def scan_tron_chain(chain_pk: int) -> None:
     chain = Chain.objects.get(pk=chain_pk)
     if not chain.active:
         return
+    if chain.type == ChainType.TRON and not chain.tron_api_key:
+        logger.warning("Tron USDT 扫描跳过，缺少 API Key", chain=chain.code)
+        return
 
     try:
         summary = TronUsdtPaymentScanner.scan_chain(chain=chain)
@@ -39,5 +42,5 @@ def scan_active_tron_chains() -> None:
     for chain_pk in Chain.objects.filter(
         active=True,
         type=ChainType.TRON,
-    ).values_list("pk", flat=True):
+    ).exclude(tron_api_key="").values_list("pk", flat=True):
         scan_tron_chain.delay(chain_pk)

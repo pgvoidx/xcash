@@ -93,6 +93,7 @@ class Chain(models.Model):
         null=True,
     )
     rpc = models.CharField(_("RPC"), blank=True, default="")
+    tron_api_key = models.CharField(_("Tron API Key"), blank=True, default="")
     is_poa = models.BooleanField(_("POA"), blank=True, null=True)
 
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
@@ -132,9 +133,13 @@ class Chain(models.Model):
             self.chain_id = None
             self.is_poa = None
             self.confirm_block_count = 0
+            self.rpc = ""
+            self.tron_api_key = self.tron_api_key.strip()
         elif self.type != ChainType.EVM:
             self.chain_id = None
             self.is_poa = None
+        if self.type != ChainType.TRON:
+            self.tron_api_key = ""
 
         with db_transaction.atomic():
             result = super().save(*args, **kwargs)

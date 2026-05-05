@@ -9,9 +9,11 @@ class TronClientError(RuntimeError):
 
 
 class TronHttpClient:
+    BASE_URL = "https://api.trongrid.io"
+
     def __init__(self, *, chain):
         self.chain = chain
-        self.base_url = chain.rpc.rstrip("/")
+        self.base_url = self.BASE_URL
         self.timeout = settings.TRON_RPC_TIMEOUT
 
     def _headers(self) -> dict[str, str]:
@@ -19,8 +21,8 @@ class TronHttpClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if settings.TRON_API_KEY:
-            headers["TRON-PRO-API-KEY"] = settings.TRON_API_KEY
+        if self.chain.tron_api_key:
+            headers["TRON-PRO-API-KEY"] = self.chain.tron_api_key
         return headers
 
     def get_latest_solid_block_number(self) -> int:

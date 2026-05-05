@@ -62,7 +62,6 @@ SIGNER_TIMEOUT = 8.0
 SIGNER_SHARED_SECRET = env.str("SIGNER_SHARED_SECRET", default="")
 SIGNER_REQUEST_TTL = 300
 TRON_RPC_TIMEOUT = 8.0
-TRON_API_KEY = env.str("TRON_API_KEY", default="")
 
 # 只有当 TCP 对端本身属于受信代理网段时，才接受其转发的 X-Real-IP。
 # 默认留空，生产环境必须显式配置，例如 127.0.0.1、::1 或反向代理容器网段。

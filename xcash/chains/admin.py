@@ -6,6 +6,7 @@ from unfold.decorators import display
 from chains.models import Address
 from chains.models import BroadcastTask
 from chains.models import Chain
+from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import Wallet
 from common.admin import ModelAdmin
@@ -32,7 +33,7 @@ class ChainAdmin(ModelAdmin):
         "latest_block_number",
     )
 
-    fieldsets = (
+    base_fieldsets = (
         (
             _("基本信息"),
             {
@@ -41,16 +42,18 @@ class ChainAdmin(ModelAdmin):
                     "code",
                     "type",
                     "native_coin",
-                    "rpc",
                     "confirm_block_count",
                     "active",
                 )
             },
         ),
+    )
+    evm_fieldsets = (
         (
             "EVM",
             {
                 "fields": (
+                    "rpc",
                     "chain_id",
                     "open_native_scanner",
                     "base_transfer_gas",
@@ -60,8 +63,43 @@ class ChainAdmin(ModelAdmin):
             },
         ),
     )
+    bitcoin_fieldsets = (
+        (
+            "Bitcoin",
+            {
+                "fields": (
+                    "rpc",
+                )
+            },
+        ),
+    )
+    tron_fieldsets = (
+        (
+            "Tron",
+            {
+                "fields": (
+                    "tron_api_key",
+                )
+            },
+        ),
+    )
 
     readonly_fields = ("chain_id",)
+
+    def get_fieldsets(self, request, obj=None):
+        if obj is None:
+            return (
+                *self.base_fieldsets,
+                *self.evm_fieldsets,
+                *self.tron_fieldsets,
+            )
+        if obj.type == ChainType.EVM:
+            return (*self.base_fieldsets, *self.evm_fieldsets)
+        if obj.type == ChainType.BITCOIN:
+            return (*self.base_fieldsets, *self.bitcoin_fieldsets)
+        if obj.type == ChainType.TRON:
+            return (*self.base_fieldsets, *self.tron_fieldsets)
+        return self.base_fieldsets
 
 
 @admin.register(Wallet)
