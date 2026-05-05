@@ -139,6 +139,7 @@ class Chain(models.Model):
         with db_transaction.atomic():
             result = super().save(*args, **kwargs)
             self._sync_evm_native_scan_cursor()
+            self._sync_tron_usdt_watch_cursor()
         return result
 
     def _sync_evm_native_scan_cursor(self) -> None:
@@ -160,6 +161,37 @@ class Chain(models.Model):
         EvmScanCursor.objects.get_or_create(
             chain=self,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+            defaults={
+                "last_scanned_block": 0,
+                "last_safe_block": 0,
+                "enabled": True,
+            },
+        )
+
+    def _sync_tron_usdt_watch_cursor(self) -> None:
+        """活跃 Tron 链应在配置层持有 USDT 扫描游标，避免依赖首次 beat 扫描显式创建。"""
+        if self.type != ChainType.TRON or not self.active:
+            return
+
+        from currencies.models import ChainToken
+        from tron.models import TronWatchCursor
+
+        usdt_mapping = (
+            ChainToken.objects.filter(
+                chain=self,
+                crypto__symbol="USDT",
+                crypto__active=True,
+            )
+            .exclude(address="")
+            .only("address")
+            .first()
+        )
+        if usdt_mapping is None:
+            return
+
+        TronWatchCursor.objects.get_or_create(
+            chain=self,
+            contract_address=usdt_mapping.address,
             defaults={
                 "last_scanned_block": 0,
                 "last_safe_block": 0,

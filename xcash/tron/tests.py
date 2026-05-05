@@ -134,6 +134,45 @@ class TronHttpClientTests(SimpleTestCase):
 
 
 class TronWatchCursorTests(TestCase):
+    def test_enabling_tron_chain_creates_usdt_watch_cursor(self):
+        trx = Crypto.objects.create(
+            name="TRON Cursor Sync Native",
+            symbol="TRX-CURSOR-SYNC",
+            coingecko_id="tron-cursor-sync-native",
+            decimals=6,
+        )
+        usdt = Crypto.objects.create(
+            name="Tether Tron Cursor Sync",
+            symbol="USDT",
+            coingecko_id="tether-tron-cursor-sync",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            name="Tron Cursor Sync Mainnet",
+            code="tron-cursor-sync-mainnet",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="https://api.trongrid.io",
+            active=False,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=chain,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+
+        chain.active = True
+        chain.save(update_fields=["active"])
+
+        cursor = TronWatchCursor.objects.get(chain=chain)
+        self.assertEqual(
+            cursor.contract_address,
+            "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        )
+        self.assertTrue(cursor.enabled)
+        self.assertEqual(cursor.last_scanned_block, 0)
+
     def test_cursor_is_unique_per_chain_and_contract_address(self):
         trx = Crypto.objects.create(
             name="TRON Cursor",
