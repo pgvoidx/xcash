@@ -661,7 +661,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             f"saas:permission:{project.appid}",
             {
                 "frozen": False,
-                "enable_deposit": True,
+                "enable_deposit_withdrawal": True,
                 "allowed_chain_codes": [eth_chain.code],
                 "allowed_crypto_symbols": [usdt.symbol],
             },

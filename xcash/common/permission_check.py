@@ -60,7 +60,8 @@ def check_saas_permission(
 
     Args:
         appid: xcash Project appid
-        action: 'deposit' / 'withdrawal' 等，对应 SaaS 返回的 enable_<action>
+        action: 'deposit' / 'withdrawal' 等，用于错误详情；功能开关统一读取
+            SaaS 返回的 enable_deposit_withdrawal
         chain_code: 可选，Chain.code。传入时会按 SaaS 返回的 allowed_chain_codes 校验
         crypto_symbol: 可选，Crypto.symbol。传入时会按 SaaS 返回的 allowed_crypto_symbols 校验
 
@@ -93,8 +94,7 @@ def check_saas_permission(
     if perm.get("frozen"):
         raise APIError(ErrorCode.ACCOUNT_FROZEN)
 
-    feature_key = f"enable_{action}"
-    if not perm.get(feature_key, False):
+    if not perm.get("enable_deposit_withdrawal", False):
         raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=action)
 
     allowed_chain_codes = perm.get("allowed_chain_codes")
@@ -136,7 +136,7 @@ def filter_saas_allowed_methods(
     if time.time() - fetched_at > REFRESH_AFTER:
         _schedule_refresh(appid)
 
-    if perm.get("frozen") or not perm.get("enable_deposit", False):
+    if perm.get("frozen") or not perm.get("enable_deposit_withdrawal", False):
         return {}
 
     allowed_chain_codes = perm.get("allowed_chain_codes")

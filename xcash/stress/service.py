@@ -474,8 +474,7 @@ def _seed_stress_saas_permission_cache(project: Project) -> None:
     perm = {
         "appid": project.appid,
         "frozen": False,
-        "enable_deposit": True,
-        "enable_withdrawal": True,
+        "enable_deposit_withdrawal": True,
     }
     cache_key = f"saas:permission:{project.appid}"
     cache.set(f"{cache_key}:stale", perm, STRESS_SAAS_PERMISSION_CACHE_TTL)

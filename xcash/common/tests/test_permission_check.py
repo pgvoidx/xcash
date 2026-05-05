@@ -41,7 +41,7 @@ class CheckSaasPermissionTest(TestCase):
 
         cache.set(
             "saas:permission:XC-a",
-            {"frozen": False, "enable_deposit": True, "_fetched_at": time.time()},
+            {"frozen": False, "enable_deposit_withdrawal": True, "_fetched_at": time.time()},
             None,
         )
 
@@ -54,7 +54,7 @@ class CheckSaasPermissionTest(TestCase):
 
         cache.set(
             "saas:permission:XC-a",
-            {"frozen": False, "enable_deposit": True, "_fetched_at": time.time() - 120},
+            {"frozen": False, "enable_deposit_withdrawal": True, "_fetched_at": time.time() - 120},
             None,
         )
 
@@ -86,7 +86,7 @@ class CheckSaasPermissionTest(TestCase):
 
         cache.set(
             "saas:permission:XC-frozen",
-            {"frozen": True, "enable_deposit": True, "_fetched_at": time.time()},
+            {"frozen": True, "enable_deposit_withdrawal": True, "_fetched_at": time.time()},
             None,
         )
 
@@ -94,21 +94,23 @@ class CheckSaasPermissionTest(TestCase):
             check_saas_permission(appid="XC-frozen", action="deposit")
         self.assertEqual(ctx.exception.error_code, ErrorCode.ACCOUNT_FROZEN)
 
-    def test_disabled_feature_denied(self):
-        """缓存里 enable_<action>=False → 拒绝该 action，但其他 action 仍放行。"""
+    def test_disabled_deposit_withdrawal_feature_denies_both_actions(self):
+        """缓存里 enable_deposit_withdrawal=False → deposit/withdrawal 都拒绝。"""
 
         cache.set(
             "saas:permission:XC-d",
             {
                 "frozen": False,
-                "enable_deposit": True,
-                "enable_withdrawal": False,
+                "enable_deposit_withdrawal": False,
                 "_fetched_at": time.time(),
             },
             None,
         )
 
-        check_saas_permission(appid="XC-d", action="deposit")  # 放行
+        with self.assertRaises(APIError) as deposit_ctx:
+            check_saas_permission(appid="XC-d", action="deposit")
+        self.assertEqual(deposit_ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+
         with self.assertRaises(APIError) as ctx:
             check_saas_permission(appid="XC-d", action="withdrawal")
         self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
@@ -120,7 +122,7 @@ class CheckSaasPermissionTest(TestCase):
             "saas:permission:XC-allowed",
             {
                 "frozen": False,
-                "enable_deposit": True,
+                "enable_deposit_withdrawal": True,
                 "allowed_chain_codes": ["ethereum-mainnet", "bsc-mainnet"],
                 "allowed_crypto_symbols": ["USDT", "USDC"],
                 "_fetched_at": time.time(),
@@ -142,7 +144,7 @@ class CheckSaasPermissionTest(TestCase):
             "saas:permission:XC-chain-denied",
             {
                 "frozen": False,
-                "enable_deposit": True,
+                "enable_deposit_withdrawal": True,
                 "allowed_chain_codes": ["ethereum-mainnet"],
                 "allowed_crypto_symbols": ["USDT", "USDC"],
                 "_fetched_at": time.time(),
@@ -166,7 +168,7 @@ class CheckSaasPermissionTest(TestCase):
             "saas:permission:XC-crypto-denied",
             {
                 "frozen": False,
-                "enable_withdrawal": True,
+                "enable_deposit_withdrawal": True,
                 "allowed_chain_codes": ["ethereum-mainnet"],
                 "allowed_crypto_symbols": ["USDT"],
                 "_fetched_at": time.time(),
@@ -190,7 +192,7 @@ class CheckSaasPermissionTest(TestCase):
             "saas:permission:XC-feature-only",
             {
                 "frozen": False,
-                "enable_deposit": True,
+                "enable_deposit_withdrawal": True,
                 "allowed_chain_codes": ["ethereum-mainnet"],
                 "allowed_crypto_symbols": ["USDT"],
                 "_fetched_at": time.time(),
@@ -199,6 +201,21 @@ class CheckSaasPermissionTest(TestCase):
         )
 
         check_saas_permission(appid="XC-feature-only", action="deposit")
+
+    def test_single_feature_flag_allows_withdrawal(self):
+        """withdrawal 也只读取 enable_deposit_withdrawal，不再要求独立开关。"""
+
+        cache.set(
+            "saas:permission:XC-single-flag",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": True,
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        check_saas_permission(appid="XC-single-flag", action="withdrawal")
 
     @override_settings(INTERNAL_API_TOKEN="")
     @patch("common.permission_check._refresh_saas_permission.delay")
@@ -241,8 +258,7 @@ class RefreshSaasPermissionTaskTest(TestCase):
         mock_resp.json.return_value = {
             "appid": "XC-r",
             "frozen": False,
-            "enable_deposit": True,
-            "enable_withdrawal": True,
+            "enable_deposit_withdrawal": True,
         }
         mock_resp.raise_for_status.return_value = None
         mock_client_cls.return_value.__enter__.return_value.post.return_value = mock_resp
@@ -253,7 +269,9 @@ class RefreshSaasPermissionTaskTest(TestCase):
 
         cached = cache.get("saas:permission:XC-r")
         self.assertIsNotNone(cached)
-        self.assertTrue(cached["enable_deposit"])
+        self.assertTrue(cached["enable_deposit_withdrawal"])
+        self.assertNotIn("enable_deposit", cached)
+        self.assertNotIn("enable_withdrawal", cached)
         self.assertIn("_fetched_at", cached)
         self.assertGreaterEqual(cached["_fetched_at"], before)
         self.assertLessEqual(cached["_fetched_at"], after)
@@ -262,11 +280,7 @@ class RefreshSaasPermissionTaskTest(TestCase):
     def test_task_failure_keeps_old_cache(self, mock_client_cls):
         """任务调 SaaS 失败 → 旧缓存原封不动，方便后续主调用继续兜底。"""
 
-        old = {
-            "frozen": False,
-            "enable_deposit": True,
-            "_fetched_at": time.time() - 100,
-        }
+        old = {"frozen": False, "enable_deposit_withdrawal": True, "_fetched_at": time.time() - 100}
         cache.set("saas:permission:XC-keep", old, None)
 
         mock_client_cls.return_value.__enter__.return_value.post.side_effect = httpx.ConnectError("boom")
@@ -278,7 +292,7 @@ class RefreshSaasPermissionTaskTest(TestCase):
     def test_task_4xx_treated_as_failure(self, mock_client_cls):
         """SaaS 返回 4xx（如 token 错误）→ 同样视作失败，不破坏旧缓存。"""
 
-        old = {"frozen": False, "enable_deposit": True, "_fetched_at": time.time() - 100}
+        old = {"frozen": False, "enable_deposit_withdrawal": True, "_fetched_at": time.time() - 100}
         cache.set("saas:permission:XC-4xx", old, None)
 
         mock_resp = Mock()
