@@ -672,6 +672,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         wallet = Wallet.generate()
         project = Project.objects.create(
@@ -762,6 +763,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Deposit Project",
@@ -829,6 +831,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Collection Project",
@@ -1264,6 +1267,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Deposit Task Project",
@@ -1338,6 +1342,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         wallet = Wallet.generate()
         project = Project.objects.create(
@@ -1427,6 +1432,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
+            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Native Replay Project",
