@@ -14,7 +14,6 @@ if typing.TYPE_CHECKING:
 
     from chains.models import Chain
     from currencies.models import ChainToken
-    from projects.models import Project
 
 
 class CryptoService:
@@ -70,22 +69,27 @@ class CryptoService:
         return crypto.support_this_chain(target_chain)
 
     @staticmethod
-    def allowed_methods(project: Project) -> dict[str, set[str]]:
-        sanitized: dict[str, set[str]] = {}
+    def allowed_methods() -> dict[str, set[str]]:
+        """返回系统级 invoice 可用 (crypto_symbol → {chain_code}) 映射。
 
-        active_chains = list(ChainService.get_active_chains())
-        # 支付方式只由已激活资产组成，防止占位币出现在商户或用户的可选项中。
-        for crypto in CryptoService.list_all(active_only=True):
-            available_codes = {
-                chain.code
-                for chain in active_chains
-                if ChainProductCapabilityService.supports_invoice_method(
-                    chain=chain,
-                    crypto=crypto,
-                )
-            }
-            if available_codes:
-                sanitized[crypto.symbol] = available_codes
+        实现：通过 ChainToken 一次查询带出所有 active crypto ↔ active chain 关系，
+        在内存中应用 capability 规则。避免了对每个 (crypto, chain) 组合重复查询
+        support_this_chain 的 N×M 次 SQL。
+        """
+        from currencies.models import ChainToken
+
+        tokens = (
+            ChainToken.objects.select_related("crypto", "chain")
+            .filter(crypto__active=True, chain__active=True)
+        )
+
+        sanitized: dict[str, set[str]] = {}
+        for token in tokens:
+            if ChainProductCapabilityService.supports_invoice_method(
+                chain=token.chain,
+                crypto=token.crypto,
+            ):
+                sanitized.setdefault(token.crypto.symbol, set()).add(token.chain.code)
 
         return sanitized
 

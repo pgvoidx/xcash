@@ -55,6 +55,28 @@ def _schedule_refresh(appid: str) -> None:
         _refresh_saas_permission.delay(appid=appid)
 
 
+def _read_saas_perm(appid: str) -> dict | None:
+    """读取 SaaS 权限缓存，必要时触发后台刷新。
+
+    Returns:
+        None: 自托管、未对接 SaaS、或冷缓存（fail-open 场景）
+        dict: 缓存中的权限数据
+    """
+    if not settings.INTERNAL_API_TOKEN or not appid:
+        return None
+
+    perm = cache.get(_cache_key(appid))
+    if perm is None:
+        _schedule_refresh(appid)
+        return None
+
+    fetched_at = perm.get("_fetched_at", 0)
+    if time.time() - fetched_at > REFRESH_AFTER:
+        _schedule_refresh(appid)
+
+    return perm
+
+
 def check_saas_permission(
     *,
     appid: str,
@@ -86,17 +108,9 @@ def check_saas_permission(
     if not appid:
         raise APIError(ErrorCode.INVALID_APPID)
 
-    perm = cache.get(_cache_key(appid))
-
+    perm = _read_saas_perm(appid)
     if perm is None:
-        # 冷启动：默认放行，但派发刷新任务，让下次有缓存可用
-        _schedule_refresh(appid)
         return
-
-    # 命中缓存：必要时派发后台刷新（不影响本次判定）
-    fetched_at = perm.get("_fetched_at", 0)
-    if time.time() - fetched_at > REFRESH_AFTER:
-        _schedule_refresh(appid)
 
     if perm.get("frozen"):
         raise APIError(ErrorCode.ACCOUNT_FROZEN)
@@ -137,14 +151,9 @@ def filter_saas_allowed_methods(
     if not settings.INTERNAL_API_TOKEN or not appid:
         return {symbol: list(chain_codes) for symbol, chain_codes in methods.items()}
 
-    perm = cache.get(_cache_key(appid))
+    perm = _read_saas_perm(appid)
     if perm is None:
-        _schedule_refresh(appid)
         return {symbol: list(chain_codes) for symbol, chain_codes in methods.items()}
-
-    fetched_at = perm.get("_fetched_at", 0)
-    if time.time() - fetched_at > REFRESH_AFTER:
-        _schedule_refresh(appid)
 
     if perm.get("frozen"):
         return {}

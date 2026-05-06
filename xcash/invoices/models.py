@@ -179,25 +179,21 @@ class Invoice(models.Model):
     @classmethod
     def available_methods(cls, project: Project) -> dict[str, list[str]]:
         """返回项目当前可用的 crypto→链列表。
-        1、先查已经设置收币地址的公链
-        2、再查当前项目允许的支付方式
+
+        逻辑 = 系统支持的 invoice (crypto, chain) 组合 ∩ 项目已配置收币地址的链 ∩ SaaS 白名单。
         """
-        receivable_chain_codes = ProjectService.receivable_chain_codes(project)
-        allowed_methods = CryptoService.allowed_methods(project)
+        receivable_codes = ProjectService.receivable_chain_codes(project)
+        allowed = CryptoService.allowed_methods()
 
-        available_methods: dict[str, list[str]] = {}
+        methods = {
+            symbol: sorted(allowed[symbol] & receivable_codes)
+            for symbol in allowed
+            if allowed[symbol] & receivable_codes
+        }
 
-        for symbol in allowed_methods:
-            available_chain_codes = [
-                code
-                for code in allowed_methods[symbol]
-                if code in receivable_chain_codes
-            ]
-            if available_chain_codes:
-                available_methods[symbol] = available_chain_codes
         return filter_saas_allowed_methods(
             appid=project.appid,
-            methods=available_methods,
+            methods=methods,
         )
 
     @db_transaction.atomic
