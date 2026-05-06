@@ -151,6 +151,27 @@ class EvmReconcilePendingChainTests(TestCase):
 
         scan_blocks_mock.assert_not_called()
 
+    def test_estimate_avg_block_interval_uses_chain_poa_retry(self):
+        # 块时间采样也会读取区块；这里必须走链级 POA 自愈入口，
+        # 否则 BSC 的 extraData 校验异常只会被吞掉并持续刷 warning。
+        from evm.tasks import _estimate_avg_block_interval
+
+        self.chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(block_number=100)
+        )
+        self.chain.get_block_with_poa_retry = Mock(
+            side_effect=[
+                {"timestamp": 1_700_000_200},
+                {"timestamp": 1_700_000_000},
+            ]
+        )
+
+        interval = _estimate_avg_block_interval(self.chain)
+
+        self.assertEqual(interval, 10)
+        self.chain.get_block_with_poa_retry.assert_any_call(100)
+        self.chain.get_block_with_poa_retry.assert_any_call(80)
+
     @patch(
         "evm.tasks.EvmChainScannerService.scan_blocks_for_reconcile",
     )

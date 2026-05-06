@@ -4,6 +4,7 @@ import contextlib
 from decimal import Decimal
 from functools import cached_property
 from typing import TYPE_CHECKING
+from typing import Any
 
 import environ
 from django.core.exceptions import ValidationError
@@ -13,6 +14,7 @@ from django.db import transaction as db_transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from web3 import Web3
+from web3.exceptions import ExtraDataLengthError
 from web3.middleware import ExtraDataToPOAMiddleware
 
 from common.fields import AddressField
@@ -230,8 +232,12 @@ class Chain(models.Model):
             # POA 链的 extraData（proofOfAuthorityData）通常远超 32 字节
             extra = block.get("proofOfAuthorityData") or block.get("extraData", b"")
             return len(extra) > 32
+        except ExtraDataLengthError:
+            # web3.py 在格式化区块前就会拦截超长 extraData；这个异常本身就是 POA 信号。
+            return True
         except Exception:
-            return False
+            # RPC 短暂失败时保留已有配置，避免一次探测失败把 BSC 误改成非 POA。
+            return bool(self.is_poa)
 
     def content(self):
         return {
@@ -244,11 +250,39 @@ class Chain(models.Model):
 
     @cached_property
     def w3(self):
-        w3 = Web3(Web3.HTTPProvider(self.rpc, request_kwargs={"timeout": 8}))
-        if self.is_poa:
-            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        return self._build_w3()
 
+    def _build_w3(self, *, force_poa: bool = False) -> Web3:
+        w3 = Web3(Web3.HTTPProvider(self.rpc, request_kwargs={"timeout": 8}))
+        if force_poa or self.is_poa:
+            w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         return w3
+
+    def get_block_with_poa_retry(
+        self,
+        block_identifier: int | str,
+        *,
+        full_transactions: bool = False,
+    ) -> Any:
+        """读取区块时遇到 POA extraData 校验错误，自动标记链并用 POA middleware 重试。"""
+        try:
+            return self.w3.eth.get_block(
+                block_identifier,
+                full_transactions=full_transactions,
+            )
+        except ExtraDataLengthError:
+            self._mark_as_poa()
+            retry_w3 = self._build_w3(force_poa=True)
+            self.__dict__["w3"] = retry_w3
+            return retry_w3.eth.get_block(
+                block_identifier,
+                full_transactions=full_transactions,
+            )
+
+    def _mark_as_poa(self) -> None:
+        if self.pk:
+            self.__class__.objects.filter(pk=self.pk).update(is_poa=True)
+        self.is_poa = True
 
     @property
     def adapter(self) -> "AdapterInterface":  # noqa

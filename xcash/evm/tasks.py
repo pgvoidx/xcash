@@ -305,8 +305,8 @@ def _estimate_avg_block_interval(chain) -> float:
         return float(_DEFAULT_AVG_BLOCK_INTERVAL_SECONDS)
 
     try:
-        latest_block = chain.w3.eth.get_block(latest_block_number)  # noqa: SLF001
-        start_block = chain.w3.eth.get_block(start_block_number)  # noqa: SLF001
+        latest_block = chain.get_block_with_poa_retry(latest_block_number)
+        start_block = chain.get_block_with_poa_retry(start_block_number)
         latest_ts = int(latest_block["timestamp"])
         start_ts = int(start_block["timestamp"])
     except Exception as exc:  # noqa: BLE001

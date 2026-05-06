@@ -9,10 +9,12 @@ from unittest.mock import patch
 from django.core import checks
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
+from web3.exceptions import ExtraDataLengthError
 
 from chains.models import Address
 from chains.models import AddressChainState
@@ -38,6 +40,72 @@ from chains.signer import build_signer_signature_payload
 from chains.signer import get_signer_backend
 from chains.tasks import block_number_updated
 from currencies.models import Crypto
+
+
+class ChainPoaDetectionTests(SimpleTestCase):
+    @patch("chains.models.Web3")
+    def test_detect_poa_treats_extradata_length_error_as_poa(self, web3_mock):
+        # BSC 等 POA 链会在未注入 middleware 时先被 web3.py 校验拦截；
+        # 这个异常本身就是 POA 信号，不能被兜底成 False。
+        chain = Chain(
+            name="BSC POA Detect",
+            code="bsc-poa-detect",
+            type=ChainType.EVM,
+            rpc="http://bsc.local",
+            is_poa=False,
+        )
+        web3_mock.return_value.eth.get_block.side_effect = ExtraDataLengthError(
+            "poa extraData too long"
+        )
+
+        detect_poa = getattr(
+            Chain._detect_poa,
+            "real_implementation",
+            Chain._detect_poa,
+        )
+        self.assertTrue(detect_poa(chain))
+
+
+class ChainPoaRetryTests(TestCase):
+    def setUp(self):
+        self.native = Crypto.objects.create(
+            name="BNB POA Retry",
+            symbol="BNB-POA-RETRY",
+            coingecko_id="binancecoin-poa-retry",
+        )
+        self.chain = Chain.objects.create(
+            name="BSC POA Retry",
+            code="bsc-poa-retry",
+            type=ChainType.EVM,
+            native_coin=self.native,
+            chain_id=56_901,
+            rpc="",
+            is_poa=False,
+            active=True,
+        )
+        Chain.objects.filter(pk=self.chain.pk).update(rpc="http://bsc.local")
+        self.chain.rpc = "http://bsc.local"
+
+    @patch("chains.models.Web3")
+    def test_get_block_with_poa_retry_marks_chain_and_rebuilds_cached_w3(
+        self, web3_mock
+    ):
+        failing_w3 = Mock()
+        failing_w3.eth.get_block.side_effect = ExtraDataLengthError(
+            "poa extraData too long"
+        )
+        retry_w3 = Mock()
+        retry_w3.eth.get_block.return_value = {"timestamp": 1_776_734_136}
+        web3_mock.return_value = retry_w3
+        self.chain.__dict__["w3"] = failing_w3
+
+        block = self.chain.get_block_with_poa_retry(93_739_122)
+
+        self.assertEqual(block["timestamp"], 1_776_734_136)
+        self.chain.refresh_from_db()
+        self.assertTrue(self.chain.is_poa)
+        self.assertIs(self.chain.__dict__["w3"], retry_w3)
+        retry_w3.middleware_onion.inject.assert_called_once()
 
 
 class BroadcastTaskValidationTests(TestCase):
