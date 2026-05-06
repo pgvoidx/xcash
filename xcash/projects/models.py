@@ -146,10 +146,6 @@ class Project(models.Model):
             errors.append(_("IP 白名单未配置"))
         if not self.webhook:
             errors.append(_("通知地址未配置"))
-        if not self.webhook_open:
-            errors.append(_("通知开关未开启"))
-        if not self.active:
-            errors.append(_("项目未启用"))
         if not RecipientAddress.objects.filter(
             project=self, usage=RecipientAddressUsage.INVOICE
         ).exists():
