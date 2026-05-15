@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from decimal import Decimal  # noqa: TC003 - 规格要求运行时可解析 Decimal 注解
 from typing import TYPE_CHECKING
 
+import eth_abi
+from web3 import Web3
+
 from chains.models import TransferType
 from evm.choices import TxKind
 
@@ -90,3 +93,111 @@ def assert_transfer_type_implemented(transfer_type: TransferType) -> None:
         raise NotImplementedError(
             f"{transfer_type.label} EVM builder will be implemented in §11"
         )
+
+
+_ERC20_TRANSFER_SELECTOR = "0xa9059cbb"
+
+
+def build_native_transfer_intent(
+    *,
+    address: Address,
+    chain: Chain,
+    to: str,
+    value: int,
+    transfer_type: TransferType,
+    verify_fn: Callable[[], None] | None = None,
+) -> EvmTxIntent:
+    if value < 0:
+        raise ValueError("value must be >= 0")
+
+    to_checksum = Web3.to_checksum_address(to)
+    native = chain.native_coin
+
+    return EvmTxIntent(
+        address=address,
+        chain=chain,
+        tx_kind=TxKind.NATIVE_TRANSFER,
+        to=to_checksum,
+        value=value,
+        data="",
+        gas=chain.base_transfer_gas,
+        transfer_type=transfer_type,
+        crypto=native,
+        recipient=to_checksum,
+        amount=Decimal(value).scaleb(-native.decimals),
+        verify_fn=verify_fn,
+    )
+
+
+def build_erc20_transfer_intent(
+    *,
+    address: Address,
+    chain: Chain,
+    crypto: Crypto,
+    to: str,
+    value_raw: int,
+    transfer_type: TransferType,
+    verify_fn: Callable[[], None] | None = None,
+) -> EvmTxIntent:
+    if value_raw < 0:
+        raise ValueError("value_raw must be >= 0")
+
+    to_checksum = Web3.to_checksum_address(to)
+    token_addr = crypto.address(chain)
+    if not token_addr:
+        raise ValueError(
+            f"Crypto {crypto.symbol} is not deployed on chain {chain.code}"
+        )
+
+    token_checksum = Web3.to_checksum_address(token_addr)
+    encoded_args = eth_abi.encode(["address", "uint256"], [to_checksum, value_raw]).hex()
+
+    return EvmTxIntent(
+        address=address,
+        chain=chain,
+        tx_kind=TxKind.CONTRACT_CALL,
+        to=token_checksum,
+        value=0,
+        data=f"{_ERC20_TRANSFER_SELECTOR}{encoded_args}",
+        gas=chain.erc20_transfer_gas,
+        transfer_type=transfer_type,
+        crypto=crypto,
+        recipient=to_checksum,
+        amount=Decimal(value_raw).scaleb(-crypto.get_decimals(chain)),
+        verify_fn=verify_fn,
+    )
+
+
+def build_contract_call_intent(
+    *,
+    address: Address,
+    chain: Chain,
+    to: str,
+    data: str,
+    gas: int,
+    transfer_type: TransferType,
+    value: int = 0,
+    crypto: Crypto | None = None,
+    recipient: str | None = None,
+    amount: Decimal | None = None,
+    verify_fn: Callable[[], None] | None = None,
+) -> EvmTxIntent:
+    if gas <= 0:
+        raise ValueError("gas must be > 0")
+    if value < 0:
+        raise ValueError("value must be >= 0")
+
+    return EvmTxIntent(
+        address=address,
+        chain=chain,
+        tx_kind=TxKind.CONTRACT_CALL,
+        to=Web3.to_checksum_address(to),
+        value=value,
+        data=_normalize_hex_calldata(data),
+        gas=gas,
+        transfer_type=transfer_type,
+        crypto=crypto,
+        recipient=recipient,
+        amount=amount,
+        verify_fn=verify_fn,
+    )
