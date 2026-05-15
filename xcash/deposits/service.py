@@ -45,18 +45,18 @@ class GasRechargeService:
         *,
         deposit_address: DepositAddress,
         chain,
-        erc20_gas_cost: int,
+        expected_collection_gas_cost: int,
     ) -> bool:
         """幂等地从 Vault 发起一笔 native 币补充到 deposit_address。
 
         入参：
         - deposit_address: 目标 DepositAddress 记录（对应某客户某链上的充币地址）。
         - chain: Chain 对象，需能取到 native_coin、wallet 及单次转账 gas 消耗。
-        - erc20_gas_cost: 由调用方基于当前 gas_price 预估的单次 ERC-20 转账
-          总 gas 成本（wei）。
+        - expected_collection_gas_cost: 由调用方基于当前 gas_price 预估的单次
+          归集转账总 gas 成本（wei）。
 
-        补给量固定为 10 × erc20_gas_cost，足够支撑后续约 10 次 ERC-20 归集，
-        避免为单次归集反复触发补给。
+        补给量固定为 10 × expected_collection_gas_cost，足够支撑后续约 10 次
+        归集，避免为单次归集反复触发补给。
 
         返回：
         - True 表示已成功创建一笔 Vault → 地址的 gas 补充任务，或已有尚未广播的
@@ -68,7 +68,7 @@ class GasRechargeService:
         已广播或已终局（result != UNKNOWN 或 stage 流转到后续阶段）的
         GasRecharge 不阻塞新请求，视作历史补充已完成或失败，需要再起一笔新的。
         """
-        recharge_raw = 10 * erc20_gas_cost
+        recharge_raw = 10 * expected_collection_gas_cost
         if recharge_raw <= 0:
             return False
 
@@ -90,7 +90,7 @@ class GasRechargeService:
             usage=AddressUsage.Vault,
         )
         try:
-            from evm.models import EvmBroadcastTask
+            from evm.models import EvmBroadcastTask  # noqa: PLC0415
 
             task = EvmBroadcastTask.schedule_transfer(
                 address=vault_addr,
@@ -292,7 +292,7 @@ class DepositService:
         若加锁再校验时发现候选组已被并发处理或状态漂移，本轮放弃（返回 False），
         由下一轮 gather_deposits 重新扫描发起。
         """
-        from evm.models import EvmBroadcastTask
+        from evm.models import EvmBroadcastTask  # noqa: PLC0415
 
         expected_ids = set(params["group_ids"])
         locked_ids = cls._lock_pending_group_ids(params["group_ids"])

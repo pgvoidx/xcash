@@ -37,6 +37,113 @@ from users.models import Customer
 
 
 class EvmBroadcastTaskTests(TestCase):
+    def _make_gas_recharge_eligibility_task(
+        self,
+        *,
+        transfer_type: TransferType,
+        register_deposit_address: bool,
+        suffix: str,
+    ) -> EvmBroadcastTask:
+        native = Crypto.objects.create(
+            name=f"Ethereum Gas Eligibility {suffix}",
+            symbol=f"ETHGE{suffix.upper()}",
+            coingecko_id=f"ethereum-gas-eligibility-{suffix}",
+        )
+        chain = Chain.objects.create(
+            code=f"eth-gas-eligibility-{suffix}",
+            name=f"Ethereum Gas Eligibility {suffix}",
+            type=ChainType.EVM,
+            chain_id=910_000 + len(suffix),
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        wallet = Wallet.objects.create()
+        addr = Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                f"0x00000000000000000000000000000000000{len(suffix):05d}"
+            ),
+        )
+        if register_deposit_address:
+            project = Project.objects.create(
+                name=f"gas-eligibility-project-{suffix}",
+                wallet=wallet,
+            )
+            customer = Customer.objects.create(
+                project=project,
+                uid=f"gas-eligibility-{suffix}",
+            )
+            DepositAddress.objects.create(
+                customer=customer,
+                chain_type=ChainType.EVM,
+                address=addr,
+            )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=transfer_type,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                f"0x00000000000000000000000000000000001{len(suffix):05d}"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        return EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            tx_kind=TxKind.NATIVE_TRANSFER,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+    def test_is_eligible_for_gas_recharge_uses_intent_dispatch_table(self):
+        task = self._make_gas_recharge_eligibility_task(
+            transfer_type=TransferType.Withdrawal,
+            register_deposit_address=True,
+            suffix="dispatch",
+        )
+
+        with patch("evm.intents.is_gas_rechargeable", return_value=True) as mock:
+            self.assertTrue(task._is_eligible_for_gas_recharge())
+
+        mock.assert_called_once_with(TransferType.Withdrawal)
+
+    def test_is_eligible_for_gas_recharge_requires_deposit_address(self):
+        task = self._make_gas_recharge_eligibility_task(
+            transfer_type=TransferType.DepositCollection,
+            register_deposit_address=False,
+            suffix="nodeposit",
+        )
+
+        with patch("evm.intents.is_gas_rechargeable", return_value=True) as mock:
+            self.assertFalse(task._is_eligible_for_gas_recharge())
+
+        mock.assert_called_once_with(TransferType.DepositCollection)
+
+    def test_is_eligible_for_gas_recharge_rejects_non_rechargeable_intent(self):
+        task = self._make_gas_recharge_eligibility_task(
+            transfer_type=TransferType.DepositCollection,
+            register_deposit_address=True,
+            suffix="blocked",
+        )
+
+        with patch("evm.intents.is_gas_rechargeable", return_value=False) as mock:
+            self.assertFalse(task._is_eligible_for_gas_recharge())
+
+        mock.assert_called_once_with(TransferType.DepositCollection)
+
     def test_create_without_tx_kind_is_rejected_by_database(self):
         native = Crypto.objects.create(
             name="Ethereum TxKind Constraint",
@@ -276,12 +383,12 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertIsNone(broadcast_task.last_attempt_at)
         estimate_gas_mock.assert_not_called()
         send_raw_mock.assert_not_called()
-        # 核心证据：GasRechargeService.request_recharge 被触发，参数为 erc20_gas_cost
+        # 核心证据：GasRechargeService.request_recharge 被触发，参数为 expected_collection_gas_cost
         recharge_mock.assert_called_once()
         _, kwargs = recharge_mock.call_args
         self.assertEqual(kwargs["chain"], chain)
         self.assertEqual(kwargs["deposit_address"].address_id, addr.pk)
-        self.assertEqual(kwargs["erc20_gas_cost"], 1 * 60_000)
+        self.assertEqual(kwargs["expected_collection_gas_cost"], 1 * 60_000)
 
     def test_broadcast_preflight_threshold_delegates_to_idempotent_recharge_service(self):
         # 反复广播不应重复创建补给记录：broadcast 只负责"检测到余额不足 → 委派给
@@ -371,7 +478,7 @@ class EvmBroadcastTaskTests(TestCase):
         for _, kwargs in recharge_mock.call_args_list:
             self.assertEqual(kwargs["chain"], chain)
             self.assertEqual(kwargs["deposit_address"].address_id, addr.pk)
-            self.assertEqual(kwargs["erc20_gas_cost"], 1 * 60_000)
+            self.assertEqual(kwargs["expected_collection_gas_cost"], 1 * 60_000)
         base_task.refresh_from_db()
         self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
 
@@ -498,7 +605,7 @@ class EvmBroadcastTaskTests(TestCase):
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
-                # 余额远超 value + 2 * erc20_gas_cost，主动阈值通过
+                # 余额远超 value + 2 * expected_collection_gas_cost，主动阈值通过
                 get_balance=Mock(return_value=10**18),
                 estimate_gas=Mock(
                     side_effect=ContractLogicError("execution reverted")

@@ -10,11 +10,11 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from web3 import Web3
 
+import evm.intents
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
-from chains.models import TransferType
 from chains.models import TxHash
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
@@ -206,13 +206,17 @@ class EvmBroadcastTask(UndeletableModel):
         current_native_balance = self.chain.w3.eth.get_balance(self.address.address)  # noqa: SLF001
         current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
         multiplier = get_preflight_buffer_multiplier(TxKind(self.tx_kind))
-        erc20_gas_cost = current_gas_price * self.chain.erc20_transfer_gas
+        expected_collection_gas_cost = (
+            current_gas_price * self.chain.erc20_transfer_gas
+        )
         buffer_required = int(self.value) + multiplier * self.gas * current_gas_price
         if current_native_balance < buffer_required:
             # 仅归集场景补 gas；Withdrawal 的 address 是 Vault 本身，补 gas 无意义，
             # 保持 QUEUED 静默返回，等运营向 Vault 注资即可。
             if self._is_eligible_for_gas_recharge():
-                self._request_gas_recharge(erc20_gas_cost=erc20_gas_cost)
+                self._request_gas_recharge(
+                    expected_collection_gas_cost=expected_collection_gas_cost
+                )
             # 不更新 last_attempt_at，避免 reconcile/dispatch 误判为活跃任务。
             return False
 
@@ -372,7 +376,7 @@ class EvmBroadcastTask(UndeletableModel):
         """判断当前任务是否适用"向其 address 补 gas"。
 
         条件：
-        - base_task.transfer_type == DepositCollection（只有归集地址才需要补给）
+        - base_task.transfer_type 在 EVM gas 补给派发表中允许补给
         - self.address 已登记为有效 DepositAddress（排除其它用途的地址）
 
         Withdrawal 任务的 address 本身即 Vault，补 gas 会形成 vault→vault 死循环，
@@ -380,14 +384,14 @@ class EvmBroadcastTask(UndeletableModel):
         """
         if not self.base_task_id:
             return False
-        if self.base_task.transfer_type != TransferType.DepositCollection:
+        if not evm.intents.is_gas_rechargeable(self.base_task.transfer_type):
             return False
 
         from deposits.models import DepositAddress  # noqa: PLC0415
 
         return DepositAddress.objects.filter(address=self.address).exists()
 
-    def _request_gas_recharge(self, *, erc20_gas_cost: int) -> None:
+    def _request_gas_recharge(self, *, expected_collection_gas_cost: int) -> None:
         """pre-flight 阈值不足时，委托 GasRechargeService 幂等补 gas。
 
         调用此方法前须已通过 _is_eligible_for_gas_recharge 校验，确保
@@ -408,7 +412,7 @@ class EvmBroadcastTask(UndeletableModel):
         GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=self.chain,
-            erc20_gas_cost=erc20_gas_cost,
+            expected_collection_gas_cost=expected_collection_gas_cost,
         )
 
     def _ensure_signed_with_latest_gas_price(self) -> None:

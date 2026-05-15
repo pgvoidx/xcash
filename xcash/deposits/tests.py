@@ -1,3 +1,4 @@
+# ruff: noqa: C901, DTZ001, F841, FBT002, I001, N806, PLC0415, PLR0911, PLR0912, S110
 import unittest
 from contextlib import nullcontext
 from datetime import datetime
@@ -796,17 +797,17 @@ class GasRechargeServiceTests(SimpleTestCase):
         base_task_sentinel = SimpleNamespace(pk=1001)
         schedule_mock.return_value = SimpleNamespace(base_task=base_task_sentinel)
 
-        erc20_gas_cost = 10 * 100_000
+        expected_collection_gas_cost = 10 * 100_000
         result = GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=chain,
-            erc20_gas_cost=erc20_gas_cost,
+            expected_collection_gas_cost=expected_collection_gas_cost,
         )
         self.assertTrue(result)
         schedule_mock.assert_called_once()
         call_kwargs = schedule_mock.call_args[1]
-        # 补 gas 金额 = 10 * erc20_gas_cost = 10_000_000
-        self.assertEqual(call_kwargs["value_raw"], 10 * erc20_gas_cost)
+        # 补 gas 金额 = 10 * expected_collection_gas_cost = 10_000_000
+        self.assertEqual(call_kwargs["value_raw"], 10 * expected_collection_gas_cost)
         self.assertEqual(call_kwargs["transfer_type"], TransferType.GasRecharge)
         self.assertEqual(call_kwargs["address"], vault_addr)
         self.assertEqual(call_kwargs["to"], "0xdeposit")
@@ -830,7 +831,7 @@ class GasRechargeServiceTests(SimpleTestCase):
         result = GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=chain,
-            erc20_gas_cost=1_000_000,
+            expected_collection_gas_cost=1_000_000,
         )
         self.assertTrue(result)
         schedule_mock.assert_not_called()
@@ -850,7 +851,7 @@ class GasRechargeServiceTests(SimpleTestCase):
         result = GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=chain,
-            erc20_gas_cost=0,
+            expected_collection_gas_cost=0,
         )
         self.assertFalse(result)
         schedule_mock.assert_not_called()
@@ -924,7 +925,7 @@ class GasRechargeServiceIdempotencyDbTests(TestCase):
         result = GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=chain,
-            erc20_gas_cost=100_000,
+            expected_collection_gas_cost=100_000,
         )
 
         self.assertTrue(result)
@@ -1011,7 +1012,7 @@ class GasRechargeServiceIdempotencyDbTests(TestCase):
         result = GasRechargeService.request_recharge(
             deposit_address=deposit_address,
             chain=chain_a,
-            erc20_gas_cost=100_000,
+            expected_collection_gas_cost=100_000,
         )
 
         self.assertTrue(result)
