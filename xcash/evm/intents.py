@@ -291,3 +291,84 @@ def build_x402_eip3009_facilitate_intent(
         recipient=auth_to,
         amount=Decimal(authorization.value).scaleb(-crypto.get_decimals(chain)),
     )
+
+
+_PAYMENT_COLLECTOR_FACTORY_SELECTOR = (
+    "0x" + Web3.keccak(text="deployCollector(bytes32,address,address,uint256)")[:4].hex()
+)
+
+
+def compute_create2_address(
+    factory_address: str,
+    salt: bytes,
+    init_code_hash: bytes,
+) -> str:
+    """按 EIP-1014 公式计算 CREATE2 部署后的合约地址。"""
+    _require_bytes32("salt", salt)
+    _require_bytes32("init_code_hash", init_code_hash)
+
+    factory_checksum = Web3.to_checksum_address(factory_address)
+    payload = (
+        b"\xff"
+        + Web3.to_bytes(hexstr=factory_checksum)
+        + bytes(salt)
+        + bytes(init_code_hash)
+    )
+    digest = Web3.keccak(payload)
+    return Web3.to_checksum_address(f"0x{digest[12:].hex()}")
+
+
+def build_payment_collector_deploy_intent(
+    *,
+    address: Address,
+    chain: Chain,
+    salt: bytes,
+    vault_address: str,
+    crypto: Crypto,
+    expected_collect_value_raw: int,
+    collector_init_code_hash: bytes,
+    gas: int,
+) -> EvmTxIntent:
+    if not chain.create2_factory_address:
+        raise ValueError(f"Chain {chain.code} 未配置 create2_factory_address")
+    if expected_collect_value_raw < 0:
+        raise ValueError("expected_collect_value_raw must be >= 0")
+
+    _require_bytes32("salt", salt)
+    _require_bytes32("init_code_hash", collector_init_code_hash)
+
+    token_addr = crypto.address(chain)
+    if not token_addr:
+        raise ValueError(
+            f"Crypto {crypto.symbol} is not deployed on chain {chain.code}"
+        )
+
+    factory_address = Web3.to_checksum_address(chain.create2_factory_address)
+    vault_checksum = Web3.to_checksum_address(vault_address)
+    token_checksum = Web3.to_checksum_address(token_addr)
+    collector_address = compute_create2_address(
+        factory_address=factory_address,
+        salt=salt,
+        init_code_hash=collector_init_code_hash,
+    )
+    encoded_args = eth_abi.encode(
+        ["bytes32", "address", "address", "uint256"],
+        [
+            bytes(salt),
+            vault_checksum,
+            token_checksum,
+            expected_collect_value_raw,
+        ],
+    ).hex()
+
+    return build_contract_call_intent(
+        address=address,
+        chain=chain,
+        contract_address=factory_address,
+        data=f"{_PAYMENT_COLLECTOR_FACTORY_SELECTOR}{encoded_args}",
+        gas=gas,
+        transfer_type=TransferType.ContractDeployCollect,
+        crypto=crypto,
+        recipient=collector_address,
+        amount=Decimal(expected_collect_value_raw).scaleb(-crypto.get_decimals(chain)),
+    )

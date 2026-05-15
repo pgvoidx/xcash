@@ -21,7 +21,9 @@ from evm.intents import assert_transfer_type_implemented
 from evm.intents import build_contract_call_intent
 from evm.intents import build_erc20_transfer_intent
 from evm.intents import build_native_transfer_intent
+from evm.intents import build_payment_collector_deploy_intent
 from evm.intents import build_x402_eip3009_facilitate_intent
+from evm.intents import compute_create2_address
 from evm.intents import get_preflight_buffer_multiplier
 from evm.intents import is_gas_rechargeable
 
@@ -152,13 +154,14 @@ def _fake_crypto(symbol="USDT", decimals=6, token_address=None):
     return FakeCrypto()
 
 
-def _fake_chain(native_coin=None):
+def _fake_chain(native_coin=None, create2_factory_address=None):
     class FakeChain:
         def __init__(self):
             self.code = "ETH"
             self.native_coin = native_coin or _fake_crypto(symbol="ETH", decimals=18)
             self.base_transfer_gas = 21000
             self.erc20_transfer_gas = 65000
+            self.create2_factory_address = create2_factory_address
 
     return FakeChain()
 
@@ -469,4 +472,187 @@ def test_build_x402_eip3009_facilitate_intent_rejects_crypto_not_deployed_on_cha
             chain=chain,
             crypto=crypto,
             authorization=_good_auth(),
+        )
+
+
+def test_compute_create2_address_matches_eip1014_example():
+    address = compute_create2_address(
+        factory_address="0x0000000000000000000000000000000000000000",
+        salt=b"\x00" * 32,
+        init_code_hash=Web3.keccak(b"\x00"),
+    )
+
+    assert address.lower() == "0x4d1a2e2bb4f88f0250f26ffff098b0b30b26bf38"
+
+
+def test_build_payment_collector_deploy_intent_sets_contract_call_fields():
+    factory_address = "0x1111111111111111111111111111111111111111"
+    vault_address = "0x2222222222222222222222222222222222222222"
+    token_address = "0x3333333333333333333333333333333333333333"
+    salt = b"\x01" * 32
+    collector_init_code_hash = b"\x02" * 32
+    expected_collect_value_raw = 1234567
+    gas = 180000
+    crypto = _fake_crypto(symbol="USDT", decimals=6, token_address=token_address)
+    chain = _fake_chain(create2_factory_address=factory_address)
+
+    intent = build_payment_collector_deploy_intent(
+        address=_fake_address(),
+        chain=chain,
+        salt=salt,
+        vault_address=vault_address,
+        crypto=crypto,
+        expected_collect_value_raw=expected_collect_value_raw,
+        collector_init_code_hash=collector_init_code_hash,
+        gas=gas,
+    )
+
+    expected_collector = compute_create2_address(
+        factory_address=factory_address,
+        salt=salt,
+        init_code_hash=collector_init_code_hash,
+    )
+    assert intent.tx_kind == TxKind.CONTRACT_CALL
+    assert intent.to == Web3.to_checksum_address(factory_address)
+    assert intent.recipient == expected_collector
+    assert intent.recipient != Web3.to_checksum_address(factory_address)
+    assert intent.recipient != Web3.to_checksum_address(vault_address)
+    assert intent.transfer_type == TransferType.ContractDeployCollect
+    assert intent.gas == gas
+    assert intent.amount == Decimal(expected_collect_value_raw).scaleb(-6)
+    assert intent.crypto is crypto
+    assert intent.data.startswith("0x")
+
+
+def test_build_payment_collector_deploy_intent_encodes_factory_call_data():
+    factory_address = "0x1111111111111111111111111111111111111111"
+    vault_address = "0x2222222222222222222222222222222222222222"
+    token_address = "0x3333333333333333333333333333333333333333"
+    salt = b"\x01" * 32
+    expected_collect_value_raw = 1234567
+    crypto = _fake_crypto(symbol="USDT", decimals=6, token_address=token_address)
+    chain = _fake_chain(create2_factory_address=factory_address)
+
+    intent = build_payment_collector_deploy_intent(
+        address=_fake_address(),
+        chain=chain,
+        salt=salt,
+        vault_address=vault_address,
+        crypto=crypto,
+        expected_collect_value_raw=expected_collect_value_raw,
+        collector_init_code_hash=b"\x02" * 32,
+        gas=180000,
+    )
+
+    expected_selector = "0x" + Web3.keccak(
+        text="deployCollector(bytes32,address,address,uint256)"
+    )[:4].hex()
+    assert intent.data.startswith(expected_selector)
+    decoded = eth_abi.decode(
+        ["bytes32", "address", "address", "uint256"],
+        bytes.fromhex(intent.data.removeprefix(expected_selector)),
+    )
+    assert decoded[0] == salt
+    assert Web3.to_checksum_address(decoded[1]) == Web3.to_checksum_address(
+        vault_address
+    )
+    assert Web3.to_checksum_address(decoded[2]) == Web3.to_checksum_address(
+        token_address
+    )
+    assert decoded[3] == expected_collect_value_raw
+
+
+def test_build_payment_collector_deploy_intent_rejects_missing_factory():
+    chain = _fake_chain(create2_factory_address=None)
+
+    with pytest.raises(ValueError, match=r"ETH.*create2_factory_address"):
+        build_payment_collector_deploy_intent(
+            address=_fake_address(),
+            chain=chain,
+            salt=b"\x01" * 32,
+            vault_address="0x2222222222222222222222222222222222222222",
+            crypto=_fake_crypto(
+                token_address="0x3333333333333333333333333333333333333333"
+            ),
+            expected_collect_value_raw=1,
+            collector_init_code_hash=b"\x02" * 32,
+            gas=180000,
+        )
+
+
+def test_build_payment_collector_deploy_intent_rejects_short_salt():
+    chain = _fake_chain(
+        create2_factory_address="0x1111111111111111111111111111111111111111"
+    )
+
+    with pytest.raises(ValueError, match="salt"):
+        build_payment_collector_deploy_intent(
+            address=_fake_address(),
+            chain=chain,
+            salt=b"\x01" * 31,
+            vault_address="0x2222222222222222222222222222222222222222",
+            crypto=_fake_crypto(
+                token_address="0x3333333333333333333333333333333333333333"
+            ),
+            expected_collect_value_raw=1,
+            collector_init_code_hash=b"\x02" * 32,
+            gas=180000,
+        )
+
+
+def test_build_payment_collector_deploy_intent_rejects_negative_expected_value():
+    chain = _fake_chain(
+        create2_factory_address="0x1111111111111111111111111111111111111111"
+    )
+
+    with pytest.raises(ValueError, match="expected_collect_value_raw"):
+        build_payment_collector_deploy_intent(
+            address=_fake_address(),
+            chain=chain,
+            salt=b"\x01" * 32,
+            vault_address="0x2222222222222222222222222222222222222222",
+            crypto=_fake_crypto(
+                token_address="0x3333333333333333333333333333333333333333"
+            ),
+            expected_collect_value_raw=-1,
+            collector_init_code_hash=b"\x02" * 32,
+            gas=180000,
+        )
+
+
+def test_build_payment_collector_deploy_intent_rejects_short_init_code_hash():
+    chain = _fake_chain(
+        create2_factory_address="0x1111111111111111111111111111111111111111"
+    )
+
+    with pytest.raises(ValueError, match="init_code_hash"):
+        build_payment_collector_deploy_intent(
+            address=_fake_address(),
+            chain=chain,
+            salt=b"\x01" * 32,
+            vault_address="0x2222222222222222222222222222222222222222",
+            crypto=_fake_crypto(
+                token_address="0x3333333333333333333333333333333333333333"
+            ),
+            expected_collect_value_raw=1,
+            collector_init_code_hash=b"\x02" * 31,
+            gas=180000,
+        )
+
+
+def test_build_payment_collector_deploy_intent_rejects_crypto_not_deployed():
+    chain = _fake_chain(
+        create2_factory_address="0x1111111111111111111111111111111111111111"
+    )
+
+    with pytest.raises(ValueError, match="Crypto USDT is not deployed on chain ETH"):
+        build_payment_collector_deploy_intent(
+            address=_fake_address(),
+            chain=chain,
+            salt=b"\x01" * 32,
+            vault_address="0x2222222222222222222222222222222222222222",
+            crypto=_fake_crypto(symbol="USDT", token_address=None),
+            expected_collect_value_raw=1,
+            collector_init_code_hash=b"\x02" * 32,
+            gas=180000,
         )
