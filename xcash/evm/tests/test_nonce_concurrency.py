@@ -1,57 +1,26 @@
 import threading
-from datetime import timedelta
-from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import Mock
-from unittest.mock import PropertyMock
-from unittest.mock import patch
 
-from django.contrib.admin.sites import AdminSite
-from django.core.cache import cache
-from django.db import connections
 from django.db import close_old_connections
-from django.test import TestCase
+from django.db import connections
 from django.test import TransactionTestCase
-from django.test import override_settings
-from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
-from chains.models import BroadcastTaskResult
-from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
 from chains.models import TransferType
-from chains.models import TxHash
 from chains.models import Wallet
-from chains.service import ObservedTransferPayload
-from chains.service import TransferService
-from common.consts import ERC20_TRANSFER_GAS
-from currencies.models import ChainToken
 from currencies.models import Crypto
 from evm.choices import TxKind
-from evm.admin import EvmScanCursorAdmin
+from evm.intents import build_native_transfer_intent
 from evm.models import EvmBroadcastTask
-from evm.models import EvmScanCursor
-from evm.models import EvmScanCursorType
-from evm.scanner.erc20 import EvmErc20ScanResult
-from evm.scanner.erc20 import EvmErc20TransferScanner
-from evm.scanner.native import EvmNativeDirectScanner
-from evm.scanner.native import EvmNativeScanResult
-from evm.scanner.rpc import EvmScannerRpcError
-from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
-
 
 
 class EvmNonceConcurrencyTests(TransactionTestCase):
     """多线程并发创建 EvmBroadcastTask，验证 nonce 分配的严格递增和互斥性。
 
-    EVM 的 schedule_native → _create_broadcast_task 只做 nonce 分配和 DB 写入，
+    EVM 的 schedule(intent) → _create_broadcast_task 只做 nonce 分配和 DB 写入，
     不涉及 signer 或 RPC，因此无需 mock 外部依赖。
     """
 
@@ -85,8 +54,8 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             ),
         )
 
-    def test_concurrent_schedule_native_assigns_unique_sequential_nonces(self):
-        """同一 (address, chain) 上 N 个线程同时 schedule_native，nonce 必须为 {0..N-1}。"""
+    def test_concurrent_native_schedule_assigns_unique_sequential_nonces(self):
+        """同一 (address, chain) 上 N 个线程同时 schedule(intent)，nonce 必须为 {0..N-1}。"""
         barrier = threading.Barrier(self.THREAD_COUNT)
         results: list[int] = []
         errors: list[Exception] = []
@@ -98,12 +67,14 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=5)
-                task = EvmBroadcastTask.schedule_native(
-                    address=self.address,
-                    chain=self.chain,
-                    to=recipient,
-                    value=thread_idx + 1,
-                    transfer_type=TransferType.Withdrawal,
+                task = EvmBroadcastTask.schedule(
+                    build_native_transfer_intent(
+                        address=self.address,
+                        chain=self.chain,
+                        to=recipient,
+                        value=thread_idx + 1,
+                        transfer_type=TransferType.Withdrawal,
+                    )
                 )
                 results.append(task.nonce)
             except Exception as exc:
@@ -146,7 +117,7 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             {TxKind.NATIVE_TRANSFER},
         )
 
-    def test_concurrent_schedule_native_across_addresses_are_independent(self):
+    def test_concurrent_native_schedule_across_addresses_are_independent(self):
         """不同地址并发 schedule，各自 nonce 独立从 0 开始。"""
         addresses = []
         for i in range(self.THREAD_COUNT):
@@ -173,12 +144,14 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 barrier.wait(timeout=5)
-                task = EvmBroadcastTask.schedule_native(
-                    address=addr,
-                    chain=self.chain,
-                    to=recipient,
-                    value=1,
-                    transfer_type=TransferType.Withdrawal,
+                task = EvmBroadcastTask.schedule(
+                    build_native_transfer_intent(
+                        address=addr,
+                        chain=self.chain,
+                        to=recipient,
+                        value=1,
+                        transfer_type=TransferType.Withdrawal,
+                    )
                 )
                 results.append((str(addr.address), task.nonce))
             except Exception as exc:
@@ -220,12 +193,14 @@ class EvmNonceConcurrencyTests(TransactionTestCase):
             close_old_connections()
             try:
                 batch_barrier.wait(timeout=10)
-                task = EvmBroadcastTask.schedule_native(
-                    address=self.address,
-                    chain=self.chain,
-                    to=recipient,
-                    value=1,
-                    transfer_type=TransferType.Withdrawal,
+                task = EvmBroadcastTask.schedule(
+                    build_native_transfer_intent(
+                        address=self.address,
+                        chain=self.chain,
+                        to=recipient,
+                        value=1,
+                        transfer_type=TransferType.Withdrawal,
+                    )
                 )
                 with lock:
                     results.append(task.nonce)

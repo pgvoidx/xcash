@@ -50,6 +50,8 @@ from currencies.models import Crypto
 from deposits.models import DepositAddress
 from deposits.models import DepositStatus
 from deposits.service import DepositService
+from evm.intents import build_erc20_transfer_intent
+from evm.intents import build_native_transfer_intent
 from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from evm.local_erc20 import LOCAL_EVM_ERC20_BYTECODE
 from evm.models import EvmBroadcastTask
@@ -710,13 +712,14 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         w3.eth.wait_for_transaction_receipt(fund_tx_hash)
         self._prime_evm_scan_cursors(chain=chain)
 
-        evm_task = EvmBroadcastTask.schedule_transfer(
-            address=vault_address,
-            crypto=crypto,
-            chain=chain,
-            to=recipient,
-            value_raw=int(amount * Decimal(10**18)),
-            transfer_type=TransferType.Withdrawal,
+        evm_task = EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=vault_address,
+                chain=chain,
+                to=recipient,
+                value=int(amount * Decimal(10**18)),
+                transfer_type=TransferType.Withdrawal,
+            )
         )
         withdrawal = Withdrawal.objects.create(
             project=project,
@@ -1008,13 +1011,15 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         )
         self._prime_evm_scan_cursors(chain=chain)
 
-        evm_task = EvmBroadcastTask.schedule_transfer(
-            address=vault_address,
-            chain=chain,
-            crypto=token_crypto,
-            to=recipient,
-            value_raw=transfer_amount_raw,
-            transfer_type=TransferType.Withdrawal,
+        evm_task = EvmBroadcastTask.schedule(
+            build_erc20_transfer_intent(
+                address=vault_address,
+                chain=chain,
+                crypto=token_crypto,
+                to=recipient,
+                value_raw=transfer_amount_raw,
+                transfer_type=TransferType.Withdrawal,
+            )
         )
         withdrawal = Withdrawal.objects.create(
             project=project,
@@ -1379,13 +1384,14 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             )
         )
 
-        evm_task = EvmBroadcastTask.schedule_transfer(
-            address=vault_address,
-            crypto=crypto,
-            chain=chain,
-            to=recipient,
-            value_raw=int(Decimal("0.01") * Decimal(10**18)),
-            transfer_type=TransferType.Withdrawal,
+        evm_task = EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=vault_address,
+                chain=chain,
+                to=recipient,
+                value=int(Decimal("0.01") * Decimal(10**18)),
+                transfer_type=TransferType.Withdrawal,
+            )
         )
         withdrawal = Withdrawal.objects.create(
             project=project,

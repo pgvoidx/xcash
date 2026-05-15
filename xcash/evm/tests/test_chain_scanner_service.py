@@ -25,6 +25,7 @@ from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
 from currencies.models import Crypto
 from evm.choices import TxKind
+from evm.intents import build_native_transfer_intent
 from evm.models import EvmBroadcastTask
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
@@ -345,13 +346,16 @@ class EvmChainScannerServiceTests(TestCase):
                 "0x00000000000000000000000000000000000000f1"
             ),
         )
-        task = EvmBroadcastTask.schedule_transfer(
-            address=addr,
-            chain=chain,
-            crypto=native,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f2"),
-            value_raw=123,
-            transfer_type=TransferType.Withdrawal,
+        task = EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=addr,
+                chain=chain,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000f2"
+                ),
+                value=123,
+                transfer_type=TransferType.Withdrawal,
+            )
         )
 
         self.assertEqual(task.signed_payload, "")
@@ -400,13 +404,16 @@ class EvmChainScannerServiceTests(TestCase):
         )
         get_signer_backend_mock.return_value = signer_backend
 
-        task = EvmBroadcastTask.schedule_transfer(
-            address=addr,
-            chain=chain,
-            crypto=native,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000fb"),
-            value_raw=123,
-            transfer_type=TransferType.Withdrawal,
+        task = EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=addr,
+                chain=chain,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000fb"
+                ),
+                value=123,
+                transfer_type=TransferType.Withdrawal,
+            )
         )
 
         self.assertIsNone(task.base_task.tx_hash)
@@ -427,7 +434,7 @@ class EvmChainScannerServiceTests(TestCase):
         self.assertEqual(task.gas_price, 9)
 
     @patch("evm.models.get_signer_backend")
-    def test_schedule_transfer_uses_next_nonce_after_highest_existing_nonce(
+    def test_schedule_uses_next_nonce_after_highest_existing_nonce(
         self,
         get_signer_backend_mock,
     ):
@@ -511,20 +518,23 @@ class EvmChainScannerServiceTests(TestCase):
         )
         get_signer_backend_mock.return_value = signer_backend
 
-        task = EvmBroadcastTask.schedule_transfer(
-            address=addr,
-            chain=chain,
-            crypto=native,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f7"),
-            value_raw=123,
-            transfer_type=TransferType.Withdrawal,
+        task = EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=addr,
+                chain=chain,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000f7"
+                ),
+                value=123,
+                transfer_type=TransferType.Withdrawal,
+            )
         )
 
         self.assertEqual(task.nonce, 6)
 
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch("evm.models.AddressChainState.acquire_for_update")
-    def test_schedule_transfer_no_longer_reads_gas_price_before_acquiring_account_chain_state_lock(
+    def test_schedule_no_longer_reads_gas_price_before_acquiring_account_chain_state_lock(
         self,
         acquire_state_mock,
         _next_nonce_mock,
@@ -568,13 +578,16 @@ class EvmChainScannerServiceTests(TestCase):
             SimpleNamespace(next_nonce=0, save=Mock()),
         )[1]
 
-        EvmBroadcastTask.schedule_transfer(
-            address=addr,
-            chain=chain,
-            crypto=native,
-            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f9"),
-            value_raw=123,
-            transfer_type=TransferType.Withdrawal,
+        EvmBroadcastTask.schedule(
+            build_native_transfer_intent(
+                address=addr,
+                chain=chain,
+                to=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000f9"
+                ),
+                value=123,
+                transfer_type=TransferType.Withdrawal,
+            )
         )
 
         self.assertEqual(order[:1], ["lock"])
