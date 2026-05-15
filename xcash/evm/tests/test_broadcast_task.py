@@ -169,9 +169,8 @@ class EvmBroadcastTaskTests(TestCase):
             address="0x0000000000000000000000000000000000000C01",
         )
 
-        manager = EvmBroadcastTask.objects
         with self.assertRaises(IntegrityError), transaction.atomic():
-            manager.create(
+            EvmBroadcastTask.objects.create(
                 address=addr,
                 chain=chain,
                 to="0x0000000000000000000000000000000000000002",
