@@ -1,0 +1,21 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "scripts"
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 1
+via_ir = true
+evm_version = "cancun"
+fs_permissions = [
+    { access = "read", path = "./artifacts" },
+    { access = "write", path = "../tests/fixtures" },
+]
+auto_detect_remappings = false
+skip = ["yul"]
+
+[fmt]
+line_length = 100
+tab_width = 4
