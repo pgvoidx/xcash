@@ -160,6 +160,34 @@ class EvmScannerRpcClient:
         self._block_receipts_supported = True
         return self._extract_receipt_status_map(receipts)
 
+    def get_block_receipts(self, *, block_number: int) -> dict[str, dict] | None:
+        """整块拉取所有交易 receipt，返回 hash -> receipt 映射。"""
+        if self._block_receipts_supported is False:
+            return None
+        try:
+            receipts = self._call_with_retry(
+                fn=lambda: self.chain.w3.eth.get_block_receipts(block_number),  # noqa: SLF001
+                summary="获取整块 receipt 失败",
+                method="eth_getBlockReceipts",
+                context=f"block={block_number}",
+                non_retriable_predicate=self._is_method_unavailable_error,
+            )
+        except EvmScannerRpcError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if self._is_method_unavailable_error(exc):
+                self._block_receipts_supported = False
+                return None
+            raise
+
+        self._block_receipts_supported = True
+        result: dict[str, dict] = {}
+        for item in receipts or []:
+            tx_hash = self._normalize_receipt_hash(item.get("transactionHash"))
+            if tx_hash:
+                result[tx_hash] = dict(item)
+        return result
+
     @staticmethod
     def _is_method_unavailable_error(exc: Exception) -> bool:
         # 不同 EVM 客户端 / 节点商对"方法不存在"的措辞各异，统一靠 lowercase 关键词匹配。
@@ -221,6 +249,15 @@ class EvmScannerRpcClient:
             return None
         status = receipt.get("status")
         return int(status) if status in (0, 1) else None
+
+    def get_transaction_receipt(self, *, tx_hash: str) -> dict[str, Any] | None:
+        receipt = self._call_with_retry(
+            fn=lambda: self.chain.w3.eth.get_transaction_receipt(tx_hash),  # noqa: SLF001
+            summary="获取交易回执失败",
+            method="eth_getTransactionReceipt",
+            context=f"tx_hash={tx_hash}",
+        )
+        return dict(receipt) if receipt is not None else None
 
     def _call_with_retry(
         self,

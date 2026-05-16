@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -11,8 +12,10 @@ from web3 import Web3
 import evm.intents
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
+from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
+from chains.models import ChainType
 from chains.models import TxHash
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
@@ -593,3 +596,143 @@ class EvmBroadcastTask(UndeletableModel):
             state.next_nonce = next_nonce
             state.save()
         return next_nonce
+
+
+class X402FacilitationStatus(models.TextChoices):
+    CREATED = "created", _("已创建")
+    BROADCASTED = "broadcasted", _("已广播")
+    CONFIRMED = "confirmed", _("已确认")
+    FAILED = "failed", _("已失败")
+    DROPPED = "dropped", _("已回退")
+
+
+class X402Facilitation(UndeletableModel):
+    """x402 EIP-3009 代付的最小业务实体。"""
+
+    broadcast_task = models.OneToOneField(
+        "chains.BroadcastTask",
+        on_delete=models.PROTECT,
+        related_name="x402_facilitation",
+        blank=True,
+        null=True,
+        verbose_name=_("广播任务"),
+    )
+    chain = models.ForeignKey("chains.Chain", on_delete=models.PROTECT)
+    crypto = models.ForeignKey("currencies.Crypto", on_delete=models.PROTECT)
+    facilitator_address = models.ForeignKey(
+        "chains.Address",
+        on_delete=models.PROTECT,
+        verbose_name=_("代付地址"),
+    )
+    authorization_from_address = EvmAddressField(_("授权方"))
+    authorization_to_address = EvmAddressField(_("收款方"))
+    authorization_value_raw = models.DecimalField(
+        _("授权额度（最小单位）"),
+        max_digits=32,
+        decimal_places=0,
+    )
+    valid_after = models.PositiveBigIntegerField(_("生效起始时间"))
+    valid_before = models.PositiveBigIntegerField(_("生效结束时间"))
+    authorization_nonce = models.BinaryField(_("授权 nonce"), max_length=32)
+    authorization_v = models.PositiveSmallIntegerField(_("v"))
+    authorization_r = models.BinaryField(_("r"), max_length=32)
+    authorization_s = models.BinaryField(_("s"), max_length=32)
+    transfer = models.OneToOneField(
+        "chains.OnchainTransfer",
+        on_delete=models.PROTECT,
+        related_name="x402_facilitation",
+        blank=True,
+        null=True,
+    )
+    status = models.CharField(
+        _("状态"),
+        choices=X402FacilitationStatus,
+        max_length=16,
+        default=X402FacilitationStatus.CREATED,
+    )
+    failure_reason = models.CharField(
+        _("失败原因"),
+        blank=True,
+        default="",
+        max_length=64,
+        choices=BroadcastTaskFailureReason,
+    )
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("x402 代付")
+        verbose_name_plural = verbose_name
+
+    def clean(self):
+        super().clean()
+        if self.facilitator_address.chain_type != ChainType.EVM:
+            raise ValidationError({"facilitator_address": _("必须是系统 EVM 地址")})
+        if (
+            self.broadcast_task_id
+            and self.broadcast_task.address_id != self.facilitator_address_id
+        ):
+            raise ValidationError(
+                {"facilitator_address": _("必须等于 BroadcastTask.address")}
+            )
+
+
+class ContractDeployCollectionStatus(models.TextChoices):
+    CREATED = "created", _("已创建")
+    BROADCASTED = "broadcasted", _("已广播")
+    CONFIRMED = "confirmed", _("已确认")
+    FAILED = "failed", _("已失败")
+    DROPPED = "dropped", _("已回退")
+
+
+class ContractDeployCollection(UndeletableModel):
+    """CREATE2 部署收款合约并归集 ERC20 的最小业务实体。"""
+
+    broadcast_task = models.OneToOneField(
+        "chains.BroadcastTask",
+        on_delete=models.PROTECT,
+        related_name="contract_deploy_collection",
+        blank=True,
+        null=True,
+    )
+    chain = models.ForeignKey("chains.Chain", on_delete=models.PROTECT)
+    crypto = models.ForeignKey("currencies.Crypto", on_delete=models.PROTECT)
+    deployer_address = models.ForeignKey("chains.Address", on_delete=models.PROTECT)
+    factory_address = EvmAddressField()
+    collector_address = EvmAddressField()
+    vault_address = EvmAddressField()
+    salt = models.BinaryField(max_length=32)
+    collector_init_code_hash = models.BinaryField(max_length=32)
+    expected_collect_value_raw = models.DecimalField(max_digits=32, decimal_places=0)
+    transfer = models.OneToOneField(
+        "chains.OnchainTransfer",
+        on_delete=models.PROTECT,
+        related_name="contract_deploy_collection",
+        blank=True,
+        null=True,
+    )
+    status = models.CharField(
+        choices=ContractDeployCollectionStatus,
+        max_length=16,
+        default=ContractDeployCollectionStatus.CREATED,
+    )
+    failure_reason = models.CharField(
+        blank=True,
+        default="",
+        max_length=64,
+        choices=BroadcastTaskFailureReason,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        super().clean()
+        if self.deployer_address.chain_type != ChainType.EVM:
+            raise ValidationError({"deployer_address": _("必须是系统 EVM 地址")})
+        if (
+            self.broadcast_task_id
+            and self.broadcast_task.address_id != self.deployer_address_id
+        ):
+            raise ValidationError(
+                {"deployer_address": _("必须等于 BroadcastTask.address")}
+            )

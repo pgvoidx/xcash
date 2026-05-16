@@ -13,6 +13,7 @@ from django.db.models.functions import Greatest
 from django.utils import timezone
 from web3 import Web3
 
+from chains.models import Address
 from chains.models import Chain
 from chains.models import ChainType
 from chains.service import ObservedTransferPayload
@@ -228,6 +229,7 @@ class EvmNativeDirectScanner:
             # watch_set 为空时逐块扫描只会命中 0 笔，但仍会拉全量区块；提前返回避免浪费 RPC。
             return observed_transfers, created_transfers
         decimals = chain.native_coin.get_decimals(chain)
+        system_addresses = cls._load_system_addresses()
 
         for block_number in range(from_block, to_block + 1):
             block: dict[str, Any] = rpc_client.get_full_block(block_number=block_number)
@@ -240,8 +242,16 @@ class EvmNativeDirectScanner:
 
             # 先把整块的命中 tx 集中起来；空块不去触发 receipt 拉取，避免在主路径上
             # 给绝大多数无命中的块都多付一次 eth_getBlockReceipts。
+            internal_txs: list[dict[str, Any]] = []
             matched_parsed: list[ParsedNativeTransfer] = []
             for tx in block.get("transactions", []) or []:
+                raw_from = tx.get("from")
+                if raw_from:
+                    from_address = Web3.to_checksum_address(str(raw_from))
+                    if from_address in system_addresses:
+                        internal_txs.append(tx)
+                        continue
+
                 parsed = cls._parse_transaction(
                     tx=tx,
                     watched_addresses=watch_set.watched_addresses,
@@ -249,6 +259,16 @@ class EvmNativeDirectScanner:
                 )
                 if parsed is not None:
                     matched_parsed.append(parsed)
+
+            if internal_txs:
+                receipts_map = rpc_client.get_block_receipts(block_number=block_number)
+                cls._process_internal_transactions(
+                    chain=chain,
+                    block_number=block_number,
+                    receipts_map=receipts_map,
+                    rpc_client=rpc_client,
+                    txs=internal_txs,
+                )
 
             if not matched_parsed:
                 continue
@@ -297,6 +317,46 @@ class EvmNativeDirectScanner:
                     created_transfers += 1
 
         return observed_transfers, created_transfers
+
+    @staticmethod
+    def _load_system_addresses() -> frozenset[str]:
+        return frozenset(
+            Address.objects.filter(chain_type=ChainType.EVM)
+            .values_list("address", flat=True)
+        )
+
+    @classmethod
+    def _process_internal_transactions(
+        cls,
+        *,
+        chain: Chain,
+        block_number: int,
+        receipts_map: dict[str, dict] | None,
+        rpc_client: EvmScannerRpcClient,
+        txs: list[dict[str, Any]],
+    ) -> None:
+        from evm.internal_tx.exceptions import UnknownInternalBroadcastError
+        from evm.internal_tx.processor import process_internal_transaction
+
+        for tx in txs:
+            tx_hash = f"0x{cls._to_hex(tx['hash']).lower()}"
+            receipt = (
+                receipts_map.get(tx_hash)
+                if receipts_map is not None
+                else rpc_client.get_transaction_receipt(tx_hash=tx_hash)
+            )
+            if receipt is None:
+                continue
+            try:
+                process_internal_transaction(chain=chain, tx=dict(tx), receipt=receipt)
+            except UnknownInternalBroadcastError as exc:
+                logger.warning(
+                    "EVM 扫描到系统地址发出的交易但找不到 BroadcastTask",
+                    chain=chain.code,
+                    tx_hash=exc.tx_hash,
+                    from_address=exc.from_address,
+                    block_number=block_number,
+                )
 
     @staticmethod
     def _parse_transaction(

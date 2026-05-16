@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-from decimal import Decimal
-
 import structlog
 from django.db import transaction as db_transaction
-from django.utils import timezone
-from web3 import Web3
 from web3.exceptions import TransactionNotFound
 
 from chains.adapters import TxCheckStatus
@@ -15,105 +10,11 @@ from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import Chain
-from chains.models import TransferType
 from common.time import ago
 from evm.constants import EVM_PENDING_REBROADCAST_TIMEOUT
 from evm.models import EvmBroadcastTask
-from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 
 logger = structlog.get_logger()
-
-
-def _to_hex(value: object) -> str:
-    """将 bytes / HexBytes / str 统一转为无 0x 前缀的十六进制字符串。"""
-    if hasattr(value, "hex"):
-        hex_value = value.hex()
-    elif isinstance(value, str):
-        hex_value = value.removeprefix("0x")
-    else:
-        hex_value = str(value)
-    return hex_value.removeprefix("0x")
-
-
-def _normalize_hash(value: object | None) -> str | None:
-    if value is None:
-        return None
-    raw_hex = _to_hex(value)
-    return f"0x{raw_hex.lower()}" if raw_hex else None
-
-
-def _same_evm_address(left: str | None, right: str | None) -> bool:
-    if not left or not right:
-        return False
-    try:
-        return Web3.to_checksum_address(str(left)) == Web3.to_checksum_address(
-            str(right)
-        )
-    except ValueError:
-        return False
-
-
-def _parse_erc20_transfer_log(
-    *,
-    receipt: dict,
-    token_address: str | None = None,
-    from_address: str | None = None,
-    to_address: str | None = None,
-    value: Decimal | None = None,
-) -> dict | None:
-    """从 receipt 日志中解析 ERC-20 Transfer 事件。
-
-    返回 {"from_address", "to_address", "value", "event_id"} 或 None。
-    传入任务预期参数时，只返回唯一符合合约、from、to、value 的 Transfer 日志。
-    """
-    for log in receipt.get("logs") or []:
-        if token_address is not None and not _same_evm_address(
-            str(log.get("address") or ""), token_address,
-        ):
-            continue
-
-        topics = list(log.get("topics") or [])
-        if len(topics) < 3:
-            continue
-
-        topic0_hex = _to_hex(topics[0]).lower()
-        # ERC20_TRANSFER_TOPIC0 带 0x 前缀，比较时统一去掉。
-        if topic0_hex != ERC20_TRANSFER_TOPIC0.removeprefix("0x").lower():
-            continue
-
-        parsed_from_address = Web3.to_checksum_address(
-            f"0x{_to_hex(topics[1])[-40:]}"
-        )
-        parsed_to_address = Web3.to_checksum_address(f"0x{_to_hex(topics[2])[-40:]}")
-
-        if from_address is not None and not _same_evm_address(
-            parsed_from_address, from_address,
-        ):
-            continue
-        if to_address is not None and not _same_evm_address(
-            parsed_to_address, to_address,
-        ):
-            continue
-
-        raw_data = _to_hex(log.get("data", "0x0"))
-        if not raw_data:
-            continue
-        parsed_value = Decimal(int(raw_data, 16))
-        if value is not None and parsed_value != value:
-            continue
-
-        log_index = log.get("logIndex", 0)
-        if isinstance(log_index, str):
-            log_index = int(log_index, 16) if log_index.startswith("0x") else int(log_index)
-
-        return {
-            "from_address": parsed_from_address,
-            "to_address": parsed_to_address,
-            "value": parsed_value,
-            "event_id": f"erc20:{log_index}",
-        }
-
-    return None
 
 
 class InternalEvmTaskCoordinator:
@@ -225,94 +126,17 @@ class InternalEvmTaskCoordinator:
     def _observe_confirmed_transaction(
         *, evm_task: EvmBroadcastTask, tx_hash: str, receipt: dict,
     ) -> None:
-        """链上已确认但 scanner 未观测到时，构建 ObservedTransferPayload 喂回扫描器管线。
-
-        不再直接推进终局，而是走统一的 TransferService.create_observed_transfer 入口，
-        让后续业务逻辑（匹配 Invoice/Deposit/Withdrawal、确认等）由扫描器管线统一处理。
-        """
-        from chains.service import ObservedTransferPayload
-        from chains.service import TransferService
+        """协调器兜底命中 receipt 时，把交易交给内部处理器统一推进。"""
+        from evm.internal_tx.processor import process_internal_transaction
 
         chain = evm_task.chain
-        base_task = evm_task.base_task
-        w3 = chain.w3
-
-        block_number = int(receipt["blockNumber"])
-        block = w3.eth.get_block(block_number)
-        timestamp = int(block["timestamp"])
-        occurred_at = datetime.fromtimestamp(
-            timestamp, tz=timezone.get_current_timezone(),
-        )
-
-        is_native = base_task.crypto == chain.native_coin
-
-        if is_native:
-            # 原生币转账：需要额外 get_transaction 获取 from/to/value
-            tx = w3.eth.get_transaction(tx_hash)
-            from_address = Web3.to_checksum_address(str(tx["from"]))
-            to_address = Web3.to_checksum_address(str(tx["to"]))
-            value = Decimal(int(tx["value"]))
-            decimals = chain.native_coin.get_decimals(chain)
-            amount = value.scaleb(-decimals)
-            event_id = "native:tx"
-        else:
-            # ERC-20 转账：从 receipt.logs 解析 Transfer 事件
-            decimals = base_task.crypto.get_decimals(chain)
-            expected_value = Decimal(base_task.amount).scaleb(decimals)
-            parsed = _parse_erc20_transfer_log(
-                receipt=receipt,
-                token_address=evm_task.to,
-                from_address=evm_task.address.address,
-                to_address=base_task.recipient,
-                value=expected_value,
-            )
-            if parsed is None:
-                logger.warning(
-                    "协调器未在 receipt 中找到匹配任务参数的 ERC-20 Transfer 日志",
-                    chain=chain.code,
-                    tx_hash=tx_hash,
-                    token_address=evm_task.to,
-                    from_address=evm_task.address.address,
-                    to_address=base_task.recipient,
-                    value=str(expected_value),
-                )
-                return
-            from_address = parsed["from_address"]
-            to_address = parsed["to_address"]
-            value = parsed["value"]
-            amount = value.scaleb(-decimals)
-            event_id = parsed["event_id"]
-
-        observed = ObservedTransferPayload(
-            chain=chain,
-            block=block_number,
-            tx_hash=tx_hash,
-            event_id=event_id,
-            from_address=from_address,
-            to_address=to_address,
-            crypto=base_task.crypto,
-            value=value,
-            amount=amount,
-            timestamp=timestamp,
-            occurred_at=occurred_at,
-            block_hash=_normalize_hash(receipt.get("blockHash")),
-            source="evm-coordinator",
-        )
-        TransferService.create_observed_transfer(observed=observed)
-
-        logger.info(
-            "协调器构建观察载荷并喂回扫描器管线",
-            chain=chain.code,
-            address=evm_task.address.address,
-            nonce=evm_task.nonce,
-            tx_hash=tx_hash,
-            event_id=event_id,
-        )
+        tx = chain.w3.eth.get_transaction(tx_hash)
+        process_internal_transaction(chain=chain, tx=dict(tx), receipt=receipt)
 
     @staticmethod
     @db_transaction.atomic
     def _finalize_failed_task(*, evm_task: EvmBroadcastTask) -> bool:
-        from withdrawals.service import WithdrawalService
+        from evm.internal_tx.handlers import get_handler
 
         locked_task = EvmBroadcastTask.objects.select_for_update().get(pk=evm_task.pk)
         if not locked_task.base_task_id:
@@ -333,11 +157,14 @@ class InternalEvmTaskCoordinator:
         if not updated:
             return False
 
-        if base_task.transfer_type == TransferType.Withdrawal:
-            WithdrawalService.fail_withdrawal(broadcast_task=base_task)
-        elif base_task.transfer_type == TransferType.DepositCollection:
-            from deposits.service import DepositService
-
-            # 归集任务终态失败：解绑 deposits 让下一轮 gather_deposits 重新发起。
-            DepositService.release_failed_collection(broadcast_task=base_task)
+        try:
+            handler = get_handler(base_task.transfer_type)
+        except KeyError:
+            logger.warning(
+                "coordinator 收口失败但 handler 未注册",
+                transfer_type=base_task.transfer_type,
+                base_task_id=base_task.pk,
+            )
+            return True
+        handler.finalize_failed(base_task, BroadcastTaskFailureReason.EXECUTION_REVERTED)
         return True

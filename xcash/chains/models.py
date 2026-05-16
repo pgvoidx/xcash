@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import contextlib
 from decimal import Decimal
+import enum
 from functools import cached_property
 from typing import TYPE_CHECKING
 from typing import Any
 
 import environ
+import structlog
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import models
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from withdrawals.models import Withdrawal
 
 env = environ.Env()
+logger = structlog.get_logger()
 
 
 # Create your models here.
@@ -577,6 +580,7 @@ class BroadcastTaskFailureReason(models.TextChoices):
 
     # EVM 特有失败原因：当前只保留真正可能落到已创建 BroadcastTask 终局的链上失败原因。
     EXECUTION_REVERTED = "execution_reverted", _("链上执行回退")
+    EXPECTED_TRANSFER_MISSING = "expected_transfer_missing", _("链上执行成功但预期资产移动缺失")
 
     # Bitcoin 特有失败原因：UTXO 冲突与双花只会出现在 UTXO 模型下。
     UTXO_CONFLICT = "utxo_conflict", _("UTXO 冲突")
@@ -1013,6 +1017,12 @@ class ConfirmMode(models.TextChoices):
     QUICK = "quick", _("快速")
 
 
+class _EvmSenderClass(enum.Enum):
+    SYSTEM = "system"
+    EXTERNAL = "external"
+    UNKNOWN = "unknown"
+
+
 class OnchainTransfer(models.Model):
     if TYPE_CHECKING:
         # Django 反向 OneToOne 描述符在运行时动态挂载；这里显式声明给 IDE 做静态解析。
@@ -1098,31 +1108,117 @@ class OnchainTransfer(models.Model):
         broadcast_task = BroadcastTask.resolve_by_hash(
             chain=self.chain, tx_hash=self.hash
         )
-        if broadcast_task is None or not self._match_internal(broadcast_task):
-            # 非内部广播交易，按外部收款逻辑逐一尝试匹配
-            from invoices.service import InvoiceService
-            from withdrawals.service import WithdrawalService
+        if broadcast_task is not None:
+            if self._match_internal(broadcast_task):
+                self._mark_processed()
+                if self.confirm_mode == ConfirmMode.QUICK:
+                    from .tasks import confirm_transfer
 
-            from deposits.service import DepositService
+                    confirm_transfer.delay(self.pk)
+                return
 
-            (
-                InvoiceService.try_match_invoice(self)
-                or DepositService.try_create_deposit(self)
-                or WithdrawalService.try_match_withdrawal_funding(self)
+            logger.warning(
+                "OnchainTransfer 命中 BroadcastTask 但内部 handler 未认领，跳过外部匹配",
+                transfer_id=self.pk,
+                broadcast_task_id=broadcast_task.pk,
+                tx_hash=self.hash,
             )
-        self.processed_at = timezone.now()
-        # Transfer 处理完成标记不依赖 save() 信号，直接 update 可减少无关字段回写。
-        OnchainTransfer.objects.filter(pk=self.pk).update(
-            processed_at=self.processed_at
+            self._mark_processed()
+            return
+
+        if self.chain.type == ChainType.EVM:
+            sender_class = self._classify_evm_sender()
+            if sender_class == _EvmSenderClass.SYSTEM:
+                logger.warning(
+                    "EVM OnchainTransfer 原交易发送方是系统地址但无 BroadcastTask，跳过外部匹配",
+                    transfer_id=self.pk,
+                    tx_hash=self.hash,
+                )
+                self._mark_processed()
+                return
+            if sender_class == _EvmSenderClass.UNKNOWN:
+                logger.warning(
+                    "无法确认 EVM 交易发送方分类，保留未处理状态等待重试",
+                    transfer_id=self.pk,
+                    tx_hash=self.hash,
+                )
+                return
+
+        # 非内部广播交易，且 EVM tx.from 已确认不是系统地址时，才按外部收款逻辑逐一尝试匹配。
+        from invoices.service import InvoiceService
+        from withdrawals.service import WithdrawalService
+
+        from deposits.service import DepositService
+
+        (
+            InvoiceService.try_match_invoice(self)
+            or DepositService.try_create_deposit(self)
+            or WithdrawalService.try_match_withdrawal_funding(self)
         )
+        self._mark_processed()
 
         if self.confirm_mode == ConfirmMode.QUICK:
             from .tasks import confirm_transfer
 
             confirm_transfer.delay(self.pk)
 
+    def _classify_evm_sender(self) -> _EvmSenderClass:
+        """三态判定 EVM 原交易发送方，RPC 失败时 fail closed 并等待重试。"""
+        try:
+            tx = self.chain.w3.eth.get_transaction(self.hash)
+            raw_from = None
+            if isinstance(tx, dict):
+                raw_from = tx.get("from")
+            if raw_from is None:
+                raw_from = getattr(tx, "from_", None) or getattr(tx, "fromAddress", None)
+            if raw_from is None and hasattr(tx, "__getitem__"):
+                try:
+                    raw_from = tx["from"]
+                except (KeyError, TypeError):
+                    raw_from = None
+            if not raw_from:
+                return _EvmSenderClass.UNKNOWN
+            from_address = Web3.to_checksum_address(str(raw_from))
+        except Exception:
+            logger.exception(
+                "EVM tx.from 解析失败，本轮按 UNKNOWN 处理",
+                transfer_id=self.pk,
+                tx_hash=self.hash,
+            )
+            return _EvmSenderClass.UNKNOWN
+
+        if Address.objects.filter(
+            chain_type=ChainType.EVM,
+            address=from_address,
+        ).exists():
+            return _EvmSenderClass.SYSTEM
+        return _EvmSenderClass.EXTERNAL
+
+    def _mark_processed(self) -> None:
+        self.processed_at = timezone.now()
+        OnchainTransfer.objects.filter(pk=self.pk).update(
+            processed_at=self.processed_at
+        )
+
     def _match_internal(self, broadcast_task: "BroadcastTask") -> bool:
         """通过已解析的 BroadcastTask 直接分发到对应内部业务处理器。"""
+        if self.chain.type == ChainType.EVM:
+            try:
+                from evm.internal_tx.handlers import get_handler
+
+                handler = get_handler(TransferType(broadcast_task.transfer_type))
+            except (KeyError, ValueError):
+                logger.warning(
+                    "EVM 内部交易缺少 handler 注册",
+                    transfer_id=self.pk,
+                    transfer_type=broadcast_task.transfer_type,
+                )
+                return False
+            return handler.match(self, broadcast_task)
+
+        return self._legacy_match_internal_non_evm(broadcast_task)
+
+    def _legacy_match_internal_non_evm(self, broadcast_task: "BroadcastTask") -> bool:
         from deposits.service import DepositService
         from withdrawals.service import WithdrawalService
 
@@ -1201,6 +1297,20 @@ class OnchainTransfer(models.Model):
 
     def _dispatch_business_confirm(self) -> None:
         """统一按 TransferType 分发确认动作，confirm() 专用。"""
+        if self.chain.type == ChainType.EVM and self.type:
+            try:
+                from evm.internal_tx.handlers import get_handler
+
+                handler = get_handler(TransferType(self.type))
+            except (KeyError, ValueError):
+                handler = None
+            if handler is not None:
+                handler.confirm(self)
+                return
+
+        self._legacy_dispatch_business_confirm()
+
+    def _legacy_dispatch_business_confirm(self) -> None:
         from deposits.service import DepositService
         from invoices.service import InvoiceService
         from withdrawals.service import WithdrawalService
@@ -1228,6 +1338,20 @@ class OnchainTransfer(models.Model):
 
     def _dispatch_business_drop(self) -> None:
         """统一按 TransferType 分发回退动作，drop() 专用。"""
+        if self.chain.type == ChainType.EVM and self.type:
+            try:
+                from evm.internal_tx.handlers import get_handler
+
+                handler = get_handler(TransferType(self.type))
+            except (KeyError, ValueError):
+                handler = None
+            if handler is not None:
+                handler.drop(self)
+                return
+
+        self._legacy_dispatch_business_drop()
+
+    def _legacy_dispatch_business_drop(self) -> None:
         from deposits.service import DepositService
         from invoices.service import InvoiceService
         from withdrawals.service import WithdrawalService

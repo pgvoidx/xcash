@@ -48,12 +48,7 @@ _GAS_RECHARGEABLE_TRANSFER_TYPES = frozenset({TransferType.DepositCollection})
 
 # §11 前的显式业务闸门：builder 已能构造低层 calldata，但业务回执匹配、
 # 状态流转与调用方接线尚未接通前，schedule 入口必须继续阻断这些类型。
-_UNIMPLEMENTED_BUSINESS_TRANSFER_TYPES = frozenset(
-    {
-        TransferType.X402Facilitate,
-        TransferType.ContractDeployCollect,
-    }
-)
+_UNIMPLEMENTED_BUSINESS_TRANSFER_TYPES: frozenset[TransferType] = frozenset()
 
 
 def _normalize_hex_calldata(data: str) -> str:

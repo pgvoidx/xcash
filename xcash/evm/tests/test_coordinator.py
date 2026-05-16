@@ -34,8 +34,9 @@ from chains.models import Wallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from evm.coordinator import InternalEvmTaskCoordinator
-from evm.coordinator import _parse_erc20_transfer_log
 from evm.choices import TxKind
+from evm.internal_tx._log_utils import matches_transfer_log
+from evm.internal_tx._log_utils import normalize_log_index
 from evm.models import EvmBroadcastTask
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 
@@ -79,42 +80,33 @@ def _make_erc20_transfer_log(
 
 
 # ---------------------------------------------------------------------------
-# Task 5a：_parse_erc20_transfer_log 独立测试
+# Task 5a：ERC20 Transfer 日志工具独立测试
 # ---------------------------------------------------------------------------
-class ParseErc20TransferLogTest(TestCase):
-    """_parse_erc20_transfer_log 的纯逻辑单元测试，不依赖 DB。"""
+class Erc20TransferLogUtilsTest(TestCase):
+    """ERC20 Transfer 日志匹配工具的纯逻辑单元测试，不依赖 DB。"""
 
-    def test_parses_valid_transfer_log(self):
-        """正常 ERC-20 Transfer 事件可被正确解析，字段值与原始数据一致。"""
+    def test_matches_valid_transfer_log(self):
+        """正常 ERC-20 Transfer 事件可按合约、from、to、value 匹配。"""
         log = _make_erc20_transfer_log(
+            contract_address=_CONTRACT_HEX,
             from_hex=_SENDER_HEX,
             to_hex=_RECEIVER_HEX,
             value_int=100_000_000,
             log_index=5,
         )
-        receipt = {"logs": [log]}
 
-        result = _parse_erc20_transfer_log(receipt=receipt)
-
-        self.assertIsNotNone(result)
-        self.assertEqual(
-            result["from_address"],
-            Web3.to_checksum_address(_SENDER_HEX),
+        self.assertTrue(
+            matches_transfer_log(
+                log,
+                token=_CONTRACT_HEX,
+                from_address=_SENDER_HEX,
+                to_address=_RECEIVER_HEX,
+                value=Decimal(100_000_000),
+            )
         )
-        self.assertEqual(
-            result["to_address"],
-            Web3.to_checksum_address(_RECEIVER_HEX),
-        )
-        self.assertEqual(result["value"], Decimal(100_000_000))
-        self.assertEqual(result["event_id"], "erc20:5")
-
-    def test_returns_none_when_no_transfer_log(self):
-        """logs 为空时返回 None。"""
-        result = _parse_erc20_transfer_log(receipt={"logs": []})
-        self.assertIsNone(result)
 
     def test_skips_non_transfer_topics(self):
-        """topic0 不匹配 Transfer 签名的日志（如 Approval）应被跳过，返回 None。"""
+        """topic0 不匹配 Transfer 签名的日志（如 Approval）应被跳过。"""
         # 构造一条 Approval 日志：topic0 使用 Approval keccak
         approval_topic0 = Web3.keccak(text="Approval(address,address,uint256)")
         from_padded = bytes.fromhex(_SENDER_HEX.removeprefix("0x").zfill(64))
@@ -124,10 +116,16 @@ class ParseErc20TransferLogTest(TestCase):
             "data": "0x" + hex(1000)[2:].zfill(64),
             "logIndex": 0,
         }
-        receipt = {"logs": [approval_log]}
 
-        result = _parse_erc20_transfer_log(receipt=receipt)
-        self.assertIsNone(result)
+        self.assertFalse(
+            matches_transfer_log(
+                approval_log,
+                token=_CONTRACT_HEX,
+                from_address=_SENDER_HEX,
+                to_address=_RECEIVER_HEX,
+                value=Decimal(1000),
+            )
+        )
 
     def test_filters_by_contract_sender_recipient_and_value(self):
         """内部任务解析 receipt 时必须按任务预期筛选唯一 Transfer 日志。"""
@@ -155,16 +153,20 @@ class ParseErc20TransferLogTest(TestCase):
             log_index=3,
         )
 
-        result = _parse_erc20_transfer_log(
-            receipt={"logs": [wrong_contract, wrong_value, expected]},
-            token_address=_CONTRACT_HEX,
-            from_address=_SENDER_HEX,
-            to_address=_RECEIVER_HEX,
-            value=Decimal(100_000_000),
-        )
+        matches = [
+            log
+            for log in [wrong_contract, wrong_value, expected]
+            if matches_transfer_log(
+                log,
+                token=_CONTRACT_HEX,
+                from_address=_SENDER_HEX,
+                to_address=_RECEIVER_HEX,
+                value=Decimal(100_000_000),
+            )
+        ]
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result["event_id"], "erc20:3")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(normalize_log_index(matches[0]["logIndex"]), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +247,7 @@ class ObserveConfirmedNativeTest(TestCase):
 
         with (
             patch.object(type(self.chain), "w3", new_callable=lambda: property(lambda self: mock_w3)),
-            patch("chains.service.TransferService.create_observed_transfer") as mock_create,
+            patch("evm.internal_tx.processor.process_internal_transaction") as process_mock,
         ):
             InternalEvmTaskCoordinator._observe_confirmed_transaction(
                 evm_task=self.evm_task,
@@ -253,25 +255,10 @@ class ObserveConfirmedNativeTest(TestCase):
                 receipt=receipt,
             )
 
-        mock_create.assert_called_once()
-        payload = mock_create.call_args.kwargs["observed"]
-
-        self.assertEqual(payload.chain, self.chain)
-        self.assertEqual(payload.block, 100)
-        self.assertEqual(payload.tx_hash, tx_hash)
-        self.assertEqual(payload.event_id, "native:tx")
-        self.assertEqual(
-            payload.from_address, Web3.to_checksum_address(_SENDER_HEX)
-        )
-        self.assertEqual(
-            payload.to_address, Web3.to_checksum_address(_RECEIVER_HEX)
-        )
-        self.assertEqual(payload.crypto, self.eth)
-        self.assertEqual(payload.value, Decimal("1500000000000000000"))
-        self.assertEqual(payload.amount, Decimal("1.5"))
-        self.assertEqual(payload.source, "evm-coordinator")
-
-        # 原生币路径必须调用 get_transaction 来获取 from/to/value
+        process_mock.assert_called_once()
+        self.assertEqual(process_mock.call_args.kwargs["chain"], self.chain)
+        self.assertEqual(process_mock.call_args.kwargs["receipt"], receipt)
+        self.assertEqual(process_mock.call_args.kwargs["tx"], mock_tx)
         mock_w3.eth.get_transaction.assert_called_once_with(tx_hash)
 
 
@@ -360,13 +347,15 @@ class ObserveConfirmedErc20Test(TestCase):
             "logs": [transfer_log],
         }
 
-        mock_block = {"timestamp": 1700001000}
         mock_w3 = MagicMock()
-        mock_w3.eth.get_block.return_value = mock_block
+        mock_w3.eth.get_transaction.return_value = {
+            "from": _VAULT_HEX,
+            "hash": tx_hash,
+        }
 
         with (
             patch.object(type(self.chain), "w3", new_callable=lambda: property(lambda self: mock_w3)),
-            patch("chains.service.TransferService.create_observed_transfer") as mock_create,
+            patch("evm.internal_tx.processor.process_internal_transaction") as process_mock,
         ):
             InternalEvmTaskCoordinator._observe_confirmed_transaction(
                 evm_task=self.evm_task,
@@ -374,26 +363,10 @@ class ObserveConfirmedErc20Test(TestCase):
                 receipt=receipt,
             )
 
-        mock_create.assert_called_once()
-        payload = mock_create.call_args.kwargs["observed"]
-
-        self.assertEqual(payload.chain, self.chain)
-        self.assertEqual(payload.block, 200)
-        self.assertEqual(payload.tx_hash, tx_hash)
-        self.assertEqual(payload.event_id, "erc20:5")
-        self.assertEqual(
-            payload.from_address, Web3.to_checksum_address(_VAULT_HEX)
-        )
-        self.assertEqual(
-            payload.to_address, Web3.to_checksum_address(_RECEIVER_HEX)
-        )
-        self.assertEqual(payload.crypto, self.usdt)
-        self.assertEqual(payload.value, Decimal(100_000_000))
-        self.assertEqual(payload.amount, Decimal("100"))
-        self.assertEqual(payload.source, "evm-coordinator")
-
-        # ERC-20 路径不应调用 get_transaction，from/to/value 来自 receipt.logs
-        mock_w3.eth.get_transaction.assert_not_called()
+        process_mock.assert_called_once()
+        self.assertEqual(process_mock.call_args.kwargs["chain"], self.chain)
+        self.assertEqual(process_mock.call_args.kwargs["receipt"], receipt)
+        mock_w3.eth.get_transaction.assert_called_once_with(tx_hash)
 
     def test_erc20_confirmed_ignores_mismatched_transfer_log(self):
         """receipt 内没有符合任务参数的 Transfer 日志时，不应创建观察转账。"""
@@ -412,11 +385,14 @@ class ObserveConfirmedErc20Test(TestCase):
         }
 
         mock_w3 = MagicMock()
-        mock_w3.eth.get_block.return_value = {"timestamp": 1700001000}
+        mock_w3.eth.get_transaction.return_value = {
+            "from": _VAULT_HEX,
+            "hash": tx_hash,
+        }
 
         with (
             patch.object(type(self.chain), "w3", new_callable=lambda: property(lambda self: mock_w3)),
-            patch("chains.service.TransferService.create_observed_transfer") as mock_create,
+            patch("evm.internal_tx.processor.process_internal_transaction") as process_mock,
         ):
             InternalEvmTaskCoordinator._observe_confirmed_transaction(
                 evm_task=self.evm_task,
@@ -424,7 +400,7 @@ class ObserveConfirmedErc20Test(TestCase):
                 receipt=receipt,
             )
 
-        mock_create.assert_not_called()
+        process_mock.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +579,12 @@ class CoordinatorIntegrationTest(TestCase):
             eth=SimpleNamespace(
                 get_transaction_receipt=Mock(return_value=receipt),
                 get_block=Mock(return_value={"timestamp": timestamp}),
+                get_transaction=Mock(return_value={
+                    "hash": tx_hash,
+                    "from": _VAULT_HEX,
+                    "to": _CONTRACT_HEX,
+                    "value": 0,
+                }),
             ),
         )
 
@@ -614,6 +596,7 @@ class CoordinatorIntegrationTest(TestCase):
                 get_transaction_receipt=Mock(return_value=receipt),
                 get_block=Mock(return_value={"timestamp": timestamp}),
                 get_transaction=Mock(return_value={
+                    "hash": tx_hash,
                     "from": _VAULT_HEX,
                     "to": _RECEIVER_HEX,
                     "value": 1500000000000000000,

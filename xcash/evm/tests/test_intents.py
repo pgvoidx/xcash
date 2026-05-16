@@ -118,14 +118,12 @@ def test_gas_rechargeable_for_deposit_collection_only():
     assert is_gas_rechargeable(TransferType.ContractDeployCollect) is False
 
 
-def test_assert_blocks_x402_facilitate():
-    with pytest.raises(NotImplementedError, match="§11"):
-        assert_transfer_type_implemented(TransferType.X402Facilitate)
+def test_assert_allows_x402_facilitate_after_lifecycle_is_connected():
+    assert_transfer_type_implemented(TransferType.X402Facilitate)
 
 
-def test_assert_blocks_contract_deploy_collect():
-    with pytest.raises(NotImplementedError, match="§11"):
-        assert_transfer_type_implemented(TransferType.ContractDeployCollect)
+def test_assert_allows_contract_deploy_collect_after_lifecycle_is_connected():
+    assert_transfer_type_implemented(TransferType.ContractDeployCollect)
 
 
 def test_assert_allows_legacy_transfer_types():

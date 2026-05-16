@@ -148,28 +148,36 @@ class EvmBroadcastTaskScheduleTests(TestCase):
         self.assertEqual(EvmBroadcastTask.objects.count(), 0)
         self.assertEqual(AddressChainState.objects.count(), 0)
 
-    def test_schedule_blocks_x402_facilitate_before_lock(self):
+    def test_schedule_allows_x402_facilitate_to_reach_lock(self):
         intent = self._intent(transfer_type=TransferType.X402Facilitate)
 
         with (
-            patch.object(AddressChainState, "acquire_for_update") as acquire_mock,
-            self.assertRaises(NotImplementedError),
+            patch.object(
+                AddressChainState,
+                "acquire_for_update",
+                side_effect=RuntimeError("lock reached"),
+            ) as acquire_mock,
+            self.assertRaisesRegex(RuntimeError, "lock reached"),
         ):
             EvmBroadcastTask.schedule(intent)
 
-        acquire_mock.assert_not_called()
+        acquire_mock.assert_called_once()
         self.assertEqual(BroadcastTask.objects.count(), 0)
         self.assertEqual(EvmBroadcastTask.objects.count(), 0)
 
-    def test_schedule_blocks_contract_deploy_collect_before_lock(self):
+    def test_schedule_allows_contract_deploy_collect_to_reach_lock(self):
         intent = self._intent(transfer_type=TransferType.ContractDeployCollect)
 
         with (
-            patch.object(AddressChainState, "acquire_for_update") as acquire_mock,
-            self.assertRaises(NotImplementedError),
+            patch.object(
+                AddressChainState,
+                "acquire_for_update",
+                side_effect=RuntimeError("lock reached"),
+            ) as acquire_mock,
+            self.assertRaisesRegex(RuntimeError, "lock reached"),
         ):
             EvmBroadcastTask.schedule(intent)
 
-        acquire_mock.assert_not_called()
+        acquire_mock.assert_called_once()
         self.assertEqual(BroadcastTask.objects.count(), 0)
         self.assertEqual(EvmBroadcastTask.objects.count(), 0)
