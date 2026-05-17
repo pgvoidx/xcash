@@ -4,6 +4,8 @@ volumes:
   django_db_data: {}
   redis_data: {}
   ethereum_data: {}
+  # anvil 会在 $HOME/.foundry/anvil/tmp 下按会话堆放每块 trace/receipt，独立卷便于排查与单独清理。
+  foundry_home: {}
   bitcoin_data: {}
   signer_db_data: {}
 
@@ -58,6 +60,15 @@ services:
       - "${LOCAL_EVM_PORT:-8545}:8545"
     volumes:
       - ethereum_data:/data
+      # anvil 会在 $HOME/.foundry/anvil/tmp/<session> 下累积每块 trace/receipt，并仅在 graceful shutdown 时清理。
+      # 容器异常重启会留下数十 GB 孤儿目录。挂出独立卷避免污染容器可写层，便于按需 docker volume rm 清理。
+      - foundry_home:/root/.foundry
+    # anvil 的 stdout 每秒至少一行块日志，限制 daemon 端日志体积，避免长跑后吃满宿主机磁盘。
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     command:
       - --host
       - 0.0.0.0
@@ -72,8 +83,13 @@ services:
       - --state
       - /data/anvil-state.json
       # 开发联调更关注异常退出后的状态连续性，定时落盘比仅在退出时保存更稳妥。
+      # 60s 间隔对 dev 场景足够，相比 5s 大幅降低磁盘 I/O。
       - --state-interval
-      - "5"
+      - "60"
+      # 仅保留最近 N 块的 trace/receipt/log，避免 anvil 在 $HOME/.foundry 无限累积历史。
+      # 1s 出块下 10000 块 ≈ 2.8h 历史，覆盖典型 dev 调试场景。
+      - --prune-history
+      - "10000"
 
   bitcoin:
     # 与生产环境统一使用 Bitcoin Core 官方镜像，减少环境差异。
