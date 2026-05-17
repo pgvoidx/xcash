@@ -81,6 +81,21 @@ def test_none_or_zero_token_uses_native_template():
     )
 
 
+def test_rejects_zero_vault_address():
+    with pytest.raises(ValueError, match="vault address must not be zero"):
+        codec.build_collector_init_code(
+            to="0x0000000000000000000000000000000000000000"
+        )
+
+
+def test_rejects_token_equal_to_vault():
+    with pytest.raises(ValueError, match="token address must differ from vault"):
+        codec.build_collector_init_code(
+            to="0x1111111111111111111111111111111111111111",
+            token="0x1111111111111111111111111111111111111111",
+        )
+
+
 def test_invalid_to_or_token_address_raises_value_error():
     with pytest.raises(ValueError, match="hex string"):
         codec.build_collector_init_code(to="not-an-address")

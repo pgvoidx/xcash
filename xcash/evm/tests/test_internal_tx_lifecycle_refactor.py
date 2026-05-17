@@ -1,34 +1,35 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
-from chains.models import (
-    AddressUsage,
-    BroadcastTaskFailureReason,
-    BroadcastTaskResult,
-    BroadcastTaskStage,
-    OnchainTransfer,
-    OnchainActionType,
-)
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase
+from django.test import TransactionTestCase
 from django.utils import timezone
+from web3 import Web3
+
+from chains.models import AddressUsage
+from chains.models import BroadcastTaskFailureReason
+from chains.models import BroadcastTaskResult
+from chains.models import BroadcastTaskStage
+from chains.models import OnchainActionType
+from chains.models import OnchainTransfer
+from evm.contracts_codec import collector_init_code_hash
 from evm.intents import Eip3009Authorization
 from evm.internal_tx import handlers as handlers_mod
 from evm.internal_tx import matchers as matchers_mod
 from evm.internal_tx.facts import MatchedTransferFact
 from evm.internal_tx.processor import process_internal_transaction
-from evm.models import ContractDeployCollectionStatus, X402FacilitationStatus
+from evm.models import ContractDeployCollectionStatus
+from evm.models import X402FacilitationStatus
 from evm.services.create2 import ContractDeployCollectionService
 from evm.services.x402 import X402FacilitationService
-from evm.tests._fixtures import (
-    make_broadcast_task,
-    make_erc20_token,
-    make_evm_chain,
-    make_evm_system_address,
-    make_tx_hash,
-)
-from web3 import Web3
+from evm.tests._fixtures import make_broadcast_task
+from evm.tests._fixtures import make_erc20_token
+from evm.tests._fixtures import make_evm_chain
+from evm.tests._fixtures import make_evm_system_address
+from evm.tests._fixtures import make_tx_hash
 
 
 def _erc20_transfer_log(*, token, from_addr, to_addr, value_raw, log_index):
@@ -153,11 +154,14 @@ class Create2InternalLifecycleTests(TestCase):
             crypto=crypto,
             salt=b"\x01" * 32,
             vault_address=vault_address,
-            collector_init_code_hash=b"\x02" * 32,
             expected_collect_value_raw=value_raw,
             gas=200_000,
         )
         collection = result.collection
+        assert collection.collector_init_code_hash == collector_init_code_hash(
+            to=vault_address,
+            token=crypto.address(chain),
+        )
         base_task = collection.broadcast_task
         base_task.tx_hash = make_tx_hash("c2e")
         base_task.stage = BroadcastTaskStage.PENDING_CHAIN

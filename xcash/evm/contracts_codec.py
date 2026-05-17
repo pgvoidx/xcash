@@ -65,12 +65,16 @@ def build_collector_init_code(
 ) -> bytes:
     """构造 collector init_code，to/token 写死为字节码立即数。"""
     to_bytes = to_canonical_address(to)
+    if to_bytes == ZERO_ADDRESS:
+        raise ValueError("vault address must not be zero")
     if token is None:
         return _NATIVE_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
 
     token_bytes = to_canonical_address(token)
     if token_bytes == ZERO_ADDRESS:
         return _NATIVE_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
+    if token_bytes == to_bytes:
+        raise ValueError("token address must differ from vault")
 
     patched = _ERC20_TEMPLATE.replace(VAULT_SENTINEL, to_bytes)
     return patched.replace(TOKEN_SENTINEL, token_bytes)

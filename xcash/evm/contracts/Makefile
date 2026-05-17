@@ -8,6 +8,8 @@ all: build fixtures
 build: build-yul build-sol
 
 build-yul:
+	@$(SOLC) --version | grep -q "Version: 0.8.24" || \
+		(echo "build-yul requires solc 0.8.24; set SOLC=/path/to/solc-0.8.24" >&2; exit 1)
 	@mkdir -p artifacts
 	$(SOLC) --strict-assembly --bin --optimize --optimize-runs=200 src/NativeCollector.yul \
 		| awk '/Binary representation:/{flag=1;next} flag{printf "0x%s", $$0;exit}' > artifacts/NativeCollector.bin

@@ -291,7 +291,7 @@ def build_x402_eip3009_facilitate_intent(
 
 
 _PAYMENT_COLLECTOR_FACTORY_SELECTOR = (
-    "0x" + Web3.keccak(text="deployCollector(bytes32,address,address,uint256)")[:4].hex()
+    "0x" + Web3.keccak(text="deploy(bytes32,bytes)")[:4].hex()
 )
 
 
@@ -321,42 +321,30 @@ def build_payment_collector_deploy_intent(
     address: Address,
     chain: Chain,
     salt: bytes,
-    vault_address: str,
     crypto: Crypto,
     expected_collect_value_raw: int,
-    collector_init_code_hash: bytes,
+    collector_init_code: bytes,
     gas: int,
 ) -> EvmTxIntent:
     if not chain.create2_factory_address:
         raise ValueError(f"Chain {chain.code} 未配置 create2_factory_address")
     if expected_collect_value_raw < 0:
         raise ValueError("expected_collect_value_raw must be >= 0")
+    if not collector_init_code:
+        raise ValueError("collector_init_code must not be empty")
 
     _require_bytes32("salt", salt)
-    _require_bytes32("init_code_hash", collector_init_code_hash)
-
-    token_addr = crypto.address(chain)
-    if not token_addr:
-        raise ValueError(
-            f"Crypto {crypto.symbol} is not deployed on chain {chain.code}"
-        )
+    collector_init_code_hash = Web3.keccak(collector_init_code)
 
     factory_address = Web3.to_checksum_address(chain.create2_factory_address)
-    vault_checksum = Web3.to_checksum_address(vault_address)
-    token_checksum = Web3.to_checksum_address(token_addr)
     collector_address = compute_create2_address(
         factory_address=factory_address,
         salt=salt,
         init_code_hash=collector_init_code_hash,
     )
     encoded_args = eth_abi.encode(
-        ["bytes32", "address", "address", "uint256"],
-        [
-            bytes(salt),
-            vault_checksum,
-            token_checksum,
-            expected_collect_value_raw,
-        ],
+        ["bytes32", "bytes"],
+        [bytes(salt), bytes(collector_init_code)],
     ).hex()
 
     return build_contract_call_intent(
