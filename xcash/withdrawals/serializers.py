@@ -104,9 +104,16 @@ class CreateWithdrawalSerializer(Serializer):
         if not self._is_valid_address(chain=chain, adapter=adapter, to=attrs["to"]):
             raise APIError(ErrorCode.INVALID_ADDRESS)
 
-        # 4. 最小链上单位校验
-        if int(attrs["amount"] * (10 ** crypto.get_decimals(chain))) <= 0:
+        # 4. 最小链上单位 + 精度校验
+        decimals = crypto.get_decimals(chain)
+        scaled = attrs["amount"] * Decimal(10**decimals)
+        if int(scaled) <= 0:
             raise APIError(ErrorCode.PARAMETER_ERROR)
+        # 链上 raw value 必然是整数；amount 的有效小数位超过 chain 上 crypto 精度时，
+        # broadcast 端会向下截断零头并照常上链，但 transfer_matches 用严格 == 比对会失败，
+        # 导致提币永远停在 PENDING。出口直接拒绝，由业务方按精度对齐后重试。
+        if scaled != scaled.to_integral_value():
+            raise APIError(ErrorCode.AMOUNT_PRECISION_EXCEEDED)
 
         # 注意：项目风控策略（限额/日限额）在 viewset 锁内由 assert_project_policy 执行，
         # serializer 层不重复校验——无锁检查对并发无保护作用，反而浪费 DB 查询。

@@ -44,6 +44,9 @@ class ErrorCode(Enum):
     INSUFFICIENT_RESOURCE = ErrorInfo("3002", _("链上资源不足"), 400)
     WITHDRAWAL_SINGLE_LIMIT_EXCEEDED = ErrorInfo("3004", _("超出单笔提币限额"), 400)
     WITHDRAWAL_DAILY_LIMIT_EXCEEDED = ErrorInfo("3005", _("超出当日提币限额"), 400)
+    AMOUNT_PRECISION_EXCEEDED = ErrorInfo(
+        "3006", _("金额精度超过该链上代币所支持的小数位"), 400
+    )
 
     # Deposit
     # 修复：同上

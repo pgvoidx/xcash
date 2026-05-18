@@ -515,6 +515,86 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
         supports_withdrawal_mock.assert_called_once_with(chain=chain, crypto=usdt)
         has_balance_mock.assert_not_called()
 
+    def test_validate_rejects_amount_with_precision_beyond_chain_decimals(self):
+        # 业务 amount 的有效小数位超过 chain 上 crypto 的精度时，
+        # broadcast 端会向下截断零头但匹配端会因 raw_amount != transfer.value 永远失败；
+        # 入口直接拒绝，防止已上链的提币静默卡在 PENDING。
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(
+            name="Precision Guard Project",
+            wallet=wallet,
+        )
+        usdt = Crypto.objects.create(
+            name="Tether Precision Guard",
+            symbol="USDTPRG",
+            coingecko_id="tether-precision-guard",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            name="Precision Guard Chain",
+            code="precision-guard-chain",
+            type=ChainType.EVM,
+            native_coin=usdt,
+            chain_id=804,
+            rpc="http://eth.invalid",
+            active=True,
+        )
+        request = APIRequestFactory().post(
+            "/v1/withdrawal",
+            {},
+            format="json",
+            HTTP_XC_APPID=project.appid,
+        )
+        serializer = CreateWithdrawalSerializer(
+            context={"request": request},
+        )
+
+        with (
+            patch("withdrawals.serializers.Project.retrieve", return_value=project),
+            patch(
+                "withdrawals.serializers.CryptoService.is_supported_on_chain",
+                return_value=True,
+            ),
+            patch(
+                "withdrawals.serializers.ChainProductCapabilityService.supports_withdrawal",
+                return_value=True,
+            ),
+            patch(
+                "withdrawals.serializers.AdapterFactory.get_adapter",
+                return_value=SimpleNamespace(validate_address=Mock(return_value=True)),
+            ),
+            patch(
+                "withdrawals.serializers.AddressService.find_by_address",
+                return_value=None,
+            ),
+            patch.object(
+                CreateWithdrawalSerializer,
+                "_is_valid_address",
+                return_value=True,
+            ),
+            patch(
+                "withdrawals.serializers.WithdrawalService.has_sufficient_balance",
+                side_effect=AssertionError("余额检查不应执行"),
+            ) as has_balance_mock,
+            self.assertRaises(APIError) as ctx,
+        ):
+            serializer.validate(
+                {
+                    "out_no": "precision-order",
+                    "to": "0x0000000000000000000000000000000000000005",
+                    "uid": None,
+                    "crypto": usdt.symbol,
+                    "chain": chain.code,
+                    "amount": Decimal("0.01480216"),
+                }
+            )
+
+        self.assertEqual(
+            ctx.exception.error_code.code,
+            ErrorCode.AMOUNT_PRECISION_EXCEEDED.code,
+        )
+        has_balance_mock.assert_not_called()
+
     def test_validate_rejects_evm_native_when_global_native_scanner_closed(self):
         wallet = Wallet.objects.create()
         project = Project.objects.create(

@@ -27,7 +27,9 @@ def addresses_equal(left: str | None, right: str | None, *, chain: Chain) -> boo
 
 
 def raw_amount(*, amount: Decimal, crypto: Crypto, chain: Chain) -> Decimal:
-    return Decimal(amount).scaleb(crypto.get_decimals(chain))
+    # 必须与 broadcast 端 `int(amount * 10**decimals)` 同语义：链上 raw value 永远是整数，
+    # 超出 chain 精度的尾数在广播时即被向下截断，匹配端若保留小数会与 transfer.value 严格不等。
+    return Decimal(int(Decimal(amount).scaleb(crypto.get_decimals(chain))))
 
 
 def transfer_matches(

@@ -480,6 +480,9 @@ def _build_withdrawal_cases(stress: StressRun) -> list[WithdrawalStressCase]:
     """
     from web3 import Web3
 
+    from chains.models import Chain
+    from currencies.models import Crypto
+
     total_seconds = stress.withdrawal_count / 10.0
     mu = total_seconds / 2
     sigma = total_seconds / 6
@@ -489,13 +492,30 @@ def _build_withdrawal_cases(stress: StressRun) -> list[WithdrawalStressCase]:
         "USDT": (Decimal("0.01"), Decimal("0.1")),
     }
 
+    # 提币入口已显式拒绝超过 chain 上 crypto 精度的小数位（避免链上 raw value 截断
+    # 与匹配端 expected 不一致），抽样按各 (crypto, chain) 的真实 decimals 出整数 raw units。
+    # Withdrawal.amount / CreateWithdrawalSerializer.amount 业务字段限制最多 8 位，
+    # 超过的 chain（如 ETH 18 位）也只能下钻到 8 位精度。
+    _AMOUNT_MAX_DP = 8
+    decimals_by_method: dict[tuple[str, str], int] = {}
+    for crypto_symbol, chain_code in STRESS_WITHDRAWAL_METHOD_CHOICES:
+        chain = Chain.objects.get(code=chain_code)
+        crypto = Crypto.objects.get(symbol=crypto_symbol)
+        decimals_by_method[(crypto_symbol, chain_code)] = min(
+            crypto.get_decimals(chain), _AMOUNT_MAX_DP
+        )
+
     cases = []
     for i in range(1, stress.withdrawal_count + 1):
         offset = max(0.0, min(total_seconds, random.gauss(mu, sigma)))
         crypto_symbol, chain_code = random.choice(STRESS_WITHDRAWAL_METHOD_CHOICES)  # noqa: S311
 
         lo, hi = amount_ranges[crypto_symbol]
-        amount = Decimal(str(round(random.uniform(float(lo), float(hi)), 8)))  # noqa: S311
+        amount = _sample_decimal_amount(
+            lo=lo,
+            hi=hi,
+            decimal_places=decimals_by_method[(crypto_symbol, chain_code)],
+        )
 
         to_address = Web3().eth.account.create().address
 

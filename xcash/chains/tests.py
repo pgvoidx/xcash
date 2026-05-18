@@ -200,6 +200,70 @@ class TransferMatchingTests(TestCase):
             )
         )
 
+    def test_raw_amount_truncates_when_business_amount_exceeds_chain_decimals(self):
+        # 业务 amount 的小数位超过 crypto.decimals 时（如压测用 8 位精度生成 USDT 提币），
+        # 链上 raw value 必然被向下截断；raw_amount 必须与 broadcast 端 `int(...)` 对齐，
+        # 否则 transfer_matches 的严格 == 比对会永久失败，已上链的提币无法被认领。
+        crypto = Crypto.objects.create(
+            name="Raw Amount Trunc",
+            symbol="RAT",
+            coingecko_id="raw-amount-trunc",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            name="Raw Amount Chain",
+            code="raw-amount-chain",
+            type=ChainType.EVM,
+            native_coin=crypto,
+            chain_id=930003,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+
+        value_raw = int(Decimal("0.01480216") * Decimal(10**6))
+        self.assertEqual(value_raw, 14802)
+        self.assertEqual(
+            raw_amount(amount=Decimal("0.01480216"), crypto=crypto, chain=chain),
+            Decimal(14802),
+        )
+
+        from_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000003"
+        )
+        to_address = Web3.to_checksum_address(
+            "0x0000000000000000000000000000000000000004"
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "2" * 64,
+            event_id="trunc:tx",
+            crypto=crypto,
+            from_address=from_address.lower(),
+            to_address=to_address.lower(),
+            value=Decimal(value_raw),
+            amount=Decimal("0.014802"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=OnchainActionType.Withdrawal,
+        )
+
+        self.assertTrue(
+            transfer_matches(
+                transfer,
+                chain=chain,
+                crypto=crypto,
+                from_address=from_address,
+                to_address=to_address,
+                value=raw_amount(
+                    amount=Decimal("0.01480216"),
+                    crypto=crypto,
+                    chain=chain,
+                ),
+            )
+        )
+
 
 class ChainPoaRetryTests(TestCase):
     def setUp(self):
