@@ -36,6 +36,14 @@
 - 所有外部 API 调用（区块链节点等）必须有异常处理和超时设置
 - 本项目所有 Django/DRF API 端点一律使用不带尾部 / 的 URL：禁止定义、生成、文档化或请求带 / 结尾的路由，并始终保持 APPEND_SLASH=False、DRF router 的 trailing_slash=False。
 
+## 迁移要求
+
+- **收窄数据合法域的任何 DB 操作**（新增 NOT NULL 字段、把已有字段改为 NOT NULL、新增 UNIQUE / unique_together / CHECK / FK 约束、收紧字段长度或枚举范围等），必须在**同一迁移或前置迁移**中用 `RunPython` 按**确定性、幂等**的规则把存量数据归一化到满足新约束的形态，再执行收窄操作。归一化规则要写在 RunPython 函数 docstring 里，说明对冲突数据的处理方式（回填值 / 去重判据 / 删孤儿等），便于运维事后排查。
+- 因为 `django-migration-linter` 看不到 `RunPython` 的回填/清洗语义，会把这类迁移的收窄步骤判为 `NOT_NULL` / `UNIQUE` 等违规：必须在该迁移文件里插入 `IgnoreMigration()`（`from django_migration_linter.operations import IgnoreMigration`）做**定点豁免**，并在 operations 上方写注释说明"已通过 RunPython 归一化，故安全"。禁止用全局排除规则或调低 linter 等级绕过。
+- **如果某个约束没有可以默认接受的归一化规则**（典型如 UNIQUE 冲突无法机械判定保留谁、FK 孤儿删了会丢业务数据），**禁止在该迁移直接加约束**。改用一版只做"标记/旁路冲突行 + 日志告警"的过渡迁移让运维人工处理，下一版再加约束；或把约束降级为应用层校验，从源头掐住新增冲突，等存量自然消化。
+- `RunPython` 的反向函数若无法真实还原数据，要写明确说明原因的 no-op，而不是留空或抛异常。
+- 新建表（首次迁移）内的 NOT NULL / UNIQUE 等约束、以及带常量 default 的新增列，不在此约束之列。
+
 ## 安全要求
 
 - 金融操作必须防止并发竞争（使用 select_for_update或其他有效措施），并且保证数据安全、一致
