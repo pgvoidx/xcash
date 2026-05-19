@@ -207,10 +207,14 @@ run_signer_manage() {
   # one-off 容器在 compose 网络内访问 signer-db，必须使用容器端口 5432，
   # 避免 .env 中宿主映射端口（如 5433）污染生产/演练 manage.py 连接。
   # -T 同样用于消除 PTY 引入的不确定字节，参见 run_main_manage 注释。
+  # 禁止再用 `bash -lc` 包一层：signer 镜像把 venv 装在 /app/signer/.venv 并靠
+  # Dockerfile `ENV PATH=` 注入，login shell 会被 /etc/profile.d/*.sh 重置 PATH，
+  # 导致 `python` 落到系统 python 而非 venv，触发 `No module named 'django'`。
+  # manage.py 内部已自行 sys.path.insert(0, signer_root)，无需 cwd 是 /app/signer。
   "${COMPOSE[@]}" run --rm --no-deps -T \
     -e SIGNER_POSTGRES_HOST="${postgres_host}" \
     -e SIGNER_POSTGRES_PORT=5432 \
-    signer bash -lc 'cd /app/signer && python manage.py "$@"' signer-manage "$@"
+    signer python /app/signer/manage.py "$@"
 }
 
 stop_app_services() {
