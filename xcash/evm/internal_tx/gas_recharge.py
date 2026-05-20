@@ -17,11 +17,13 @@ def gas_recharge_matcher(
     chain: Chain,
     broadcast_task: BroadcastTask,
     receipt: dict,
+    tx: dict | None = None,
 ) -> MatchedTransferFact | None:
     return match_direct_transfer_fact(
         chain=chain,
         broadcast_task=broadcast_task,
         receipt=receipt,
+        tx=tx,
     )
 
 

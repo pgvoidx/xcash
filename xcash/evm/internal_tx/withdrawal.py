@@ -15,12 +15,14 @@ def withdrawal_matcher(
     chain: Chain,
     broadcast_task: BroadcastTask,
     receipt: dict,
+    tx: dict | None = None,
 ) -> MatchedTransferFact | None:
     """提取 Withdrawal 预期的资产移动事实。"""
     return match_direct_transfer_fact(
         chain=chain,
         broadcast_task=broadcast_task,
         receipt=receipt,
+        tx=tx,
     )
 
 

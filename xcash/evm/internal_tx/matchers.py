@@ -17,6 +17,7 @@ class ReceiptMatcher(Protocol):
         chain: Chain,
         broadcast_task: BroadcastTask,
         receipt: dict,
+        tx: dict | None = None,
     ) -> MatchedTransferFact | None: ...
 
 

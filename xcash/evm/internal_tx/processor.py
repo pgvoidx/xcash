@@ -58,11 +58,13 @@ def _finalize_failed(
     reason: BroadcastTaskFailureReason,
 ) -> None:
     with db_transaction.atomic():
-        BroadcastTask.mark_finalized_failed(
+        updated = BroadcastTask.mark_finalized_failed(
             task_id=broadcast_task.pk,
             reason=reason,
             expected_stage=None,
         )
+        if not updated:
+            return
         handler = get_handler(broadcast_task.action_type)
         handler.finalize_failed(broadcast_task, reason)
 
@@ -96,7 +98,7 @@ def process_internal_transaction(
         return
 
     matcher = get_matcher(broadcast_task.action_type)
-    fact = matcher(chain=chain, broadcast_task=broadcast_task, receipt=receipt)
+    fact = matcher(chain=chain, broadcast_task=broadcast_task, receipt=receipt, tx=tx)
     if fact is None:
         _finalize_failed(
             broadcast_task=broadcast_task,

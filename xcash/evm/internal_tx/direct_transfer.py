@@ -4,6 +4,7 @@ import binascii
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
+from typing import Any
 
 import eth_abi
 from eth_abi.exceptions import DecodingError
@@ -36,6 +37,58 @@ def _normalize_calldata(data: str) -> str:
     if not data or data == "0x":
         return "0x"
     return data.lower() if data.startswith("0x") else f"0x{data.lower()}"
+
+
+def _normalize_tx_input(value: Any) -> str:
+    if value in (None, "", "0x", "0X"):
+        return "0x"
+    if isinstance(value, (bytes, bytearray)):
+        return f"0x{bytes(value).hex()}"
+    if hasattr(value, "hex") and not isinstance(value, str):
+        raw = value.hex()
+    else:
+        raw = str(value)
+    if not raw or raw in {"0x", "0X"}:
+        return "0x"
+    return raw.lower() if raw.startswith(("0x", "0X")) else f"0x{raw.lower()}"
+
+
+def _decimal_from_tx_value(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, str):
+            raw = value.strip()
+            return Decimal(int(raw, 16) if raw.startswith(("0x", "0X")) else int(raw))
+        if isinstance(value, (bytes, bytearray)):
+            return Decimal(int.from_bytes(value, byteorder="big"))
+        return Decimal(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _native_tx_matches_expected(
+    *,
+    tx: dict | None,
+    from_address: str,
+    to_address: str,
+    value: Decimal,
+) -> bool:
+    if tx is None or "input" not in tx:
+        return False
+
+    try:
+        actual_from = Web3.to_checksum_address(tx.get("from"))
+        actual_to = Web3.to_checksum_address(tx.get("to"))
+    except (TypeError, ValueError):
+        return False
+
+    return (
+        actual_from == from_address
+        and actual_to == to_address
+        and _decimal_from_tx_value(tx.get("value")) == value
+        and _normalize_tx_input(tx.get("input")) == "0x"
+    )
 
 
 def _crypto_for_token(*, chain: Chain, token_address: str) -> Crypto | None:
@@ -105,6 +158,7 @@ def match_direct_transfer_fact(
     chain: Chain,
     broadcast_task: BroadcastTask,
     receipt: dict,
+    tx: dict | None = None,
 ) -> MatchedTransferFact | None:
     fields = decode_direct_transfer_fields(chain=chain, broadcast_task=broadcast_task)
     if fields is None:
@@ -112,6 +166,13 @@ def match_direct_transfer_fact(
 
     from_address = Web3.to_checksum_address(broadcast_task.address.address)
     if fields.crypto == chain.native_coin:
+        if not _native_tx_matches_expected(
+            tx=tx,
+            from_address=from_address,
+            to_address=fields.to_address,
+            value=fields.value,
+        ):
+            return None
         return MatchedTransferFact(
             event_id="native:tx",
             from_address=from_address,

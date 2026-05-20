@@ -15,7 +15,14 @@ from evm.internal_tx._log_utils import normalize_log_index
 from evm.internal_tx.facts import MatchedTransferFact
 
 
-def x402_matcher(*, chain, broadcast_task: BroadcastTask, receipt: dict):
+def x402_matcher(
+    *,
+    chain,
+    broadcast_task: BroadcastTask,
+    receipt: dict,
+    tx: dict | None = None,
+):
+    del tx
     from evm.models import X402Facilitation
 
     try:

@@ -117,7 +117,13 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
             ts.return_value = (1_700_000_000, timezone.now())
             process_internal_transaction(
                 chain=chain,
-                tx={"hash": base_task.tx_hash, "from": vault.address},
+                tx={
+                    "hash": base_task.tx_hash,
+                    "from": vault.address,
+                    "to": recipient,
+                    "value": value_raw,
+                    "input": "0x",
+                },
                 receipt={"status": 1, "logs": [], "blockNumber": 10},
             )
 
@@ -168,7 +174,13 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
             ts.return_value = (1_700_000_000, timezone.now())
             process_internal_transaction(
                 chain=chain,
-                tx={"hash": base_task.tx_hash, "from": vault.address},
+                tx={
+                    "hash": base_task.tx_hash,
+                    "from": vault.address,
+                    "to": deposit_addr.address,
+                    "value": value_raw,
+                    "input": "0x",
+                },
                 receipt={"status": 1, "logs": [], "blockNumber": 11},
             )
 
@@ -179,6 +191,89 @@ class DirectInternalLifecycleWithoutBroadcastAssetFieldsTests(TestCase):
         assert transfer.type == OnchainActionType.GasRecharge
         assert transfer.to_address == deposit_addr.address
         assert transfer.value == Decimal(value_raw)
+
+    def test_native_internal_transfer_fails_when_real_tx_recipient_differs(self):
+        chain = make_evm_chain(code="eth-native-real", chain_id=43013)
+        address = make_evm_system_address(suffix="ad04")
+        recipient = Web3.to_checksum_address("0x" + "72" * 20)
+        wrong_recipient = Web3.to_checksum_address("0x" + "73" * 20)
+        value_raw = 10_000
+        task = make_broadcast_task(
+            chain=chain,
+            address=address,
+            action_type=OnchainActionType.Withdrawal,
+            tx_hash_suffix="7171",
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+        )
+        _native_evm_task(
+            base_task=task,
+            address=address,
+            chain=chain,
+            to=recipient,
+            value_raw=value_raw,
+        )
+
+        process_internal_transaction(
+            chain=chain,
+            tx={
+                "hash": task.tx_hash,
+                "from": address.address,
+                "to": wrong_recipient,
+                "value": value_raw,
+                "input": "0x",
+            },
+            receipt={"status": 1, "logs": [], "blockNumber": 1},
+        )
+
+        task.refresh_from_db()
+        assert task.stage == BroadcastTaskStage.FINALIZED
+        assert task.result == BroadcastTaskResult.FAILED
+        assert (
+            task.failure_reason
+            == BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING
+        )
+        assert not OnchainTransfer.objects.filter(hash=task.tx_hash).exists()
+
+    def test_native_internal_transfer_fails_when_real_tx_value_differs(self):
+        chain = make_evm_chain(code="eth-native-real-value", chain_id=43014)
+        address = make_evm_system_address(suffix="ad05")
+        recipient = Web3.to_checksum_address("0x" + "75" * 20)
+        value_raw = 10_000
+        task = make_broadcast_task(
+            chain=chain,
+            address=address,
+            action_type=OnchainActionType.Withdrawal,
+            tx_hash_suffix="7474",
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+        )
+        _native_evm_task(
+            base_task=task,
+            address=address,
+            chain=chain,
+            to=recipient,
+            value_raw=value_raw,
+        )
+
+        process_internal_transaction(
+            chain=chain,
+            tx={
+                "hash": task.tx_hash,
+                "from": address.address,
+                "to": recipient,
+                "value": value_raw - 1,
+                "input": "0x",
+            },
+            receipt={"status": 1, "logs": [], "blockNumber": 1},
+        )
+
+        task.refresh_from_db()
+        assert task.stage == BroadcastTaskStage.FINALIZED
+        assert task.result == BroadcastTaskResult.FAILED
+        assert (
+            task.failure_reason
+            == BroadcastTaskFailureReason.EXPECTED_TRANSFER_MISSING
+        )
+        assert not OnchainTransfer.objects.filter(hash=task.tx_hash).exists()
 
     def test_erc20_collection_matches_from_deposits_and_evm_task(self):
         chain = make_evm_chain(code="eth-noasset-col", chain_id=43012)
@@ -459,6 +554,35 @@ class ProcessorFailureAtomicityTests(TransactionTestCase):
         assert task.result == BroadcastTaskResult.UNKNOWN
         assert task.failure_reason == ""
 
+    def test_failed_finalize_skips_handler_when_task_already_finalized(self):
+        chain = make_evm_chain(code="eth-finalize-once", chain_id=43015)
+        address = make_evm_system_address(suffix="a9")
+        task = make_broadcast_task(
+            chain=chain,
+            address=address,
+            action_type=OnchainActionType.Withdrawal,
+            tx_hash_suffix="7676",
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+        )
+        BroadcastTask.objects.filter(pk=task.pk).update(
+            stage=BroadcastTaskStage.FINALIZED,
+            result=BroadcastTaskResult.FAILED,
+            failure_reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        )
+        original_handler = handlers_mod.HANDLERS[OnchainActionType.Withdrawal]
+        handler = MagicMock()
+        handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = handler
+        try:
+            process_internal_transaction(
+                chain=chain,
+                tx={"hash": task.tx_hash, "from": address.address},
+                receipt={"status": 0, "logs": [], "blockNumber": 1},
+            )
+        finally:
+            handlers_mod.HANDLERS[OnchainActionType.Withdrawal] = original_handler
+
+        handler.finalize_failed.assert_not_called()
+
 
 class ProcessorTimestampReuseTests(TestCase):
     def test_supplied_block_time_skips_block_lookup(self):
@@ -481,7 +605,7 @@ class ProcessorTimestampReuseTests(TestCase):
         )
         original_matcher = matchers_mod.MATCHERS[OnchainActionType.Withdrawal]
         matchers_mod.MATCHERS[OnchainActionType.Withdrawal] = (
-            lambda *, chain, broadcast_task, receipt: fact
+            lambda *, chain, broadcast_task, receipt, tx=None: fact
         )
         try:
             with patch("evm.internal_tx.processor._lookup_block_timestamp") as lookup:
