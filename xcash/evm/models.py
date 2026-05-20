@@ -181,8 +181,6 @@ class EvmBroadcastTask(UndeletableModel):
 
         if not self._passes_balance_preflight():
             return
-        if not self._passes_execution_preflight():
-            return
 
         self._record_broadcast_attempt()
         self._send_signed_payload()
@@ -215,30 +213,6 @@ class EvmBroadcastTask(UndeletableModel):
                 )
             # 不更新 last_attempt_at，避免 reconcile/dispatch 误判为活跃任务。
             return False
-
-        return True
-
-    def _passes_execution_preflight(self) -> bool:
-        # pre-flight 第 2 步：estimate_gas 兜底 revert。
-        # 主动阈值已覆盖余额不足；这里只防合约 revert / token 余额不足一类
-        # 注定失败的交易被反复 send_raw_transaction。通用 RPC 错误原样上抛给 Celery。
-        #
-        # 注意：estimate_gas 不传 nonce。nonce 顺序由 has_lower_queued_nonce +
-        # pipeline_full 保证，与"交易语义能否执行"无关；一旦绑定 nonce，EVM 节点
-        # 在同地址前序 tx 未 confirm 时会对本 tx 直接返回 "Nonce too high"
-        # （geth/anvil 的 -32003），把所有同地址后续任务打成假失败。
-        preflight_tx = self._build_transaction_dict(gas_price=self.gas_price)
-        preflight_tx.pop("nonce", None)
-        try:
-            self.chain.w3.eth.estimate_gas(preflight_tx)  # noqa: SLF001
-        except Exception as exc:  # noqa: BLE001
-            if self._is_execution_reverted_error(exc):
-                # estimate_gas 回退发生在交易广播前，此 nonce 尚未被链上消费。
-                # 直接终局会制造 nonce 空洞并放行后续更高 nonce；保持 QUEUED，
-                # 仅记录尝试时间让调度节流，等待后续重试、补救或人工处理。
-                self._record_broadcast_attempt()
-                return False
-            raise
 
         return True
 
@@ -341,16 +315,6 @@ class EvmBroadcastTask(UndeletableModel):
             InternalEvmTaskCoordinator._finalize_failed_task(evm_task=self)
             return True
         raise RuntimeError("EVM receipt status missing or invalid")
-
-    @staticmethod
-    def _is_execution_reverted_error(exc: Exception) -> bool:
-        """识别链上模拟时合约回退 / 交易本身注定失败的错误。"""
-        from web3.exceptions import ContractLogicError  # noqa: PLC0415
-
-        if isinstance(exc, ContractLogicError):
-            return True
-        msg = str(exc).lower()
-        return "execution reverted" in msg
 
     def _can_broadcast_for_current_stage(
         self, *, allow_pending_chain_rebroadcast: bool

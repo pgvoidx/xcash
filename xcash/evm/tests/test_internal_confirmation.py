@@ -265,7 +265,6 @@ class EvmInternalTaskConfirmationTests(TestCase):
                 gas_price=1,
                 # 主动阈值 pre-flight 需要 get_balance，余额充足即可通过
                 get_balance=Mock(return_value=10**18),
-                estimate_gas=Mock(return_value=21_000),
                 send_raw_transaction=send_raw_mock,
             )
         )

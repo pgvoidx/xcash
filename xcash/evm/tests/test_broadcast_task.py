@@ -1,4 +1,3 @@
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -6,7 +5,6 @@ from unittest.mock import patch
 from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase
-from django.utils import timezone
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 from web3.exceptions import TransactionNotFound
@@ -19,15 +17,10 @@ from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainActionType
-from chains.models import OnchainTransfer
-from chains.models import TransferStatus
 from chains.models import TxHash
 from chains.models import Wallet
 from currencies.models import Crypto
-from deposits.models import Deposit
 from deposits.models import DepositAddress
-from deposits.models import DepositCollection
-from deposits.models import DepositStatus
 from deposits.models import GasRecharge
 from evm.choices import TxKind
 from evm.models import EvmBroadcastTask
@@ -548,120 +541,66 @@ class EvmBroadcastTaskTests(TestCase):
         send_raw_mock.assert_not_called()
         self.assertIsNone(broadcast_task.last_attempt_at)
 
-    def test_broadcast_keeps_queued_on_preflight_revert_to_preserve_nonce(self):
-        # pre-flight 命中合约 revert 时不能直接终局失败；该 nonce 尚未上链消费，
-        # 必须保持 QUEUED 来阻断后续更高 nonce，避免制造链上 nonce 空洞。
+    def test_broadcast_does_not_estimate_gas_before_send(self):
         native = Crypto.objects.create(
-            name="Ethereum Preflight Revert Native",
-            symbol="ETHPR",
-            coingecko_id="ethereum-preflight-revert-native",
-        )
-        crypto = Crypto.objects.create(
-            name="Tether Preflight Revert",
-            symbol="USDTPR",
-            coingecko_id="tether-preflight-revert",
-            decimals=6,
+            name="Ethereum No Estimate",
+            symbol="ETHNE",
+            coingecko_id="ethereum-no-estimate",
         )
         chain = Chain.objects.create(
-            code="eth-preflight-revert",
-            name="Ethereum Preflight Revert",
+            code="eth-no-estimate",
+            name="Ethereum No Estimate",
             type=ChainType.EVM,
-            chain_id=20301,
+            chain_id=20501,
             rpc="http://localhost:8545",
             native_coin=native,
             active=True,
         )
-        wallet = Wallet.objects.create()
-        project = Project.objects.create(
-            name="preflight-revert-project", wallet=wallet,
-        )
-        customer = Customer.objects.create(project=project, uid="c-pr")
         addr = Address.objects.create(
-            wallet=wallet,
+            wallet=Wallet.objects.create(),
             chain_type=ChainType.EVM,
-            usage=AddressUsage.Deposit,
-            bip44_account=1,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
             address_index=0,
-            address=Web3.to_checksum_address(
-                "0x0000000000000000000000000000000000000301"
-            ),
+            address=Web3.to_checksum_address("0x" + "75" * 20),
         )
-        DepositAddress.objects.create(
-            customer=customer, chain_type=ChainType.EVM, address=addr,
-        )
+        estimate_gas_mock = Mock(side_effect=ContractLogicError("execution reverted"))
         send_raw_mock = Mock()
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
                 gas_price=1,
-                # 余额远超 value + 2 * expected_collection_gas_cost，主动阈值通过
                 get_balance=Mock(return_value=10**18),
-                estimate_gas=Mock(
-                    side_effect=ContractLogicError("execution reverted")
-                ),
+                estimate_gas=estimate_gas_mock,
                 send_raw_transaction=send_raw_mock,
             )
-        )
-        recipient = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000302"
         )
         base_task = BroadcastTask.objects.create(
             chain=chain,
             address=addr,
-            action_type=OnchainActionType.DepositCollection,
+            action_type=OnchainActionType.Withdrawal,
             stage=BroadcastTaskStage.QUEUED,
             result=BroadcastTaskResult.UNKNOWN,
         )
-        collection = DepositCollection.objects.create(
-            collection_hash=None,
-            broadcast_task=base_task,
-        )
-        transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=1,
-            hash="0x" + "e1" * 32,
-            event_id="erc20:pr1",
-            crypto=crypto,
-            from_address="0x0000000000000000000000000000000000000311",
-            to_address=addr.address,
-            value="1",
-            amount=Decimal("1"),
-            timestamp=1,
-            datetime=timezone.now(),
-            status=TransferStatus.CONFIRMED,
-            type=OnchainActionType.Deposit,
-        )
-        deposit = Deposit.objects.create(
-            customer=customer,
-            transfer=transfer,
-            status=DepositStatus.COMPLETED,
-            collection=collection,
-        )
-        broadcast_task = EvmBroadcastTask.objects.create(
+        task = EvmBroadcastTask.objects.create(
             base_task=base_task,
             address=addr,
             chain=chain,
             nonce=0,
-            to=recipient,
-            value=10**6,
-            gas=21_000,
-            tx_kind=TxKind.NATIVE_TRANSFER,
+            to=Web3.to_checksum_address("0x" + "76" * 20),
+            value=0,
+            data="0xdeadbeef",
+            gas=100_000,
+            tx_kind=TxKind.CONTRACT_CALL,
             gas_price=1,
             signed_payload="0x7261772d6279746573",
         )
 
-        broadcast_task.broadcast()
+        task.broadcast()
 
+        estimate_gas_mock.assert_not_called()
+        send_raw_mock.assert_called_once()
         base_task.refresh_from_db()
-        broadcast_task.refresh_from_db()
-        deposit.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
-        self.assertEqual(base_task.failure_reason, "")
-        send_raw_mock.assert_not_called()
-        self.assertIsNotNone(broadcast_task.last_attempt_at)
-        # 业务关系仍保留，等待重试、补救或人工处理；不能提前释放并跳过 nonce。
-        self.assertEqual(deposit.collection_id, collection.pk)
-        self.assertTrue(DepositCollection.objects.filter(pk=collection.pk).exists())
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
 
     def test_broadcast_preflight_success_proceeds_to_send(self):
         # pre-flight 通过时继续进入 send_raw_transaction 流程，base_task 进入 PENDING_CHAIN。
@@ -729,20 +668,13 @@ class EvmBroadcastTaskTests(TestCase):
         broadcast_task.refresh_from_db()
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
-        estimate_gas_mock.assert_called_once()
+        estimate_gas_mock.assert_not_called()
         send_raw_mock.assert_called_once()
         self.assertIsNotNone(broadcast_task.last_attempt_at)
 
-        # 回归保护：estimate_gas 必须不带 nonce，否则同地址前序 tx 未 confirm 时
-        # 节点会把本 preflight 直接判为 "Nonce too high"(-32003)，使后续任务被当成
-        # 假失败反复重试。nonce 顺序由 has_lower_queued_nonce + pipeline 保证，与
-        # estimate_gas 校验的"交易语义是否可执行"属于两件事，务必解耦。
-        preflight_arg = estimate_gas_mock.call_args.args[0]
-        self.assertNotIn("nonce", preflight_arg)
-
     def test_broadcast_preflight_buffer_uses_task_gas_for_native_transfer(self):
         # NATIVE_TRANSFER 的主动余额阈值按任务自身 gas 计算；余额刚好覆盖
-        # value + 2 * base_transfer_gas * gas_price 时应通过并进入 estimate_gas。
+        # value + 2 * base_transfer_gas * gas_price 时应通过并进入真实广播。
         native = Crypto.objects.create(
             name="Ethereum Preflight Native Gas",
             symbol="ETHPNG",
@@ -808,7 +740,7 @@ class EvmBroadcastTaskTests(TestCase):
 
         broadcast_task.broadcast()
 
-        estimate_gas_mock.assert_called_once()
+        estimate_gas_mock.assert_not_called()
         send_raw_mock.assert_called_once()
 
     def test_broadcast_preflight_contract_call_passes_at_exact_task_gas_buffer(self):
@@ -877,7 +809,7 @@ class EvmBroadcastTaskTests(TestCase):
 
         broadcast_task.broadcast()
 
-        estimate_gas_mock.assert_called_once()
+        estimate_gas_mock.assert_not_called()
         send_raw_mock.assert_called_once()
 
     @patch.object(EvmBroadcastTask, "is_pipeline_full", return_value=True)
@@ -943,79 +875,6 @@ class EvmBroadcastTaskTests(TestCase):
         broadcast_task.broadcast(allow_pending_chain_rebroadcast=True)
 
         send_raw_mock.assert_called_once()
-
-    def test_broadcast_preflight_rpc_error_reraises(self):
-        # pre-flight 遇到通用 RPC 错误（非 insufficient funds / revert）应上抛给 Celery 重试，
-        # base_task 保持 QUEUED，不创建 GasRecharge。
-        native = Crypto.objects.create(
-            name="Ethereum Preflight Timeout",
-            symbol="ETHPTO",
-            coingecko_id="ethereum-preflight-timeout",
-        )
-        chain = Chain.objects.create(
-            code="eth-preflight-timeout",
-            name="Ethereum Preflight Timeout",
-            type=ChainType.EVM,
-            chain_id=20402,
-            rpc="http://localhost:8545",
-            native_coin=native,
-            active=True,
-        )
-        addr = Address.objects.create(
-            wallet=Wallet.objects.create(),
-            chain_type=ChainType.EVM,
-            usage=AddressUsage.Vault,
-            bip44_account=1,
-            address_index=0,
-            address=Web3.to_checksum_address(
-                "0x0000000000000000000000000000000000000402"
-            ),
-        )
-        send_raw_mock = Mock()
-        chain.__dict__["w3"] = SimpleNamespace(
-            eth=SimpleNamespace(
-                gas_price=1,
-                # 余额充足，主动阈值通过，才能进入 estimate_gas 分支
-                get_balance=Mock(return_value=10**19),
-                estimate_gas=Mock(
-                    side_effect=RuntimeError("connection timeout")
-                ),
-                send_raw_transaction=send_raw_mock,
-            )
-        )
-        recipient = Web3.to_checksum_address(
-            "0x0000000000000000000000000000000000000403"
-        )
-        base_task = BroadcastTask.objects.create(
-            chain=chain,
-            address=addr,
-            action_type=OnchainActionType.Withdrawal,
-            stage=BroadcastTaskStage.QUEUED,
-            result=BroadcastTaskResult.UNKNOWN,
-        )
-        broadcast_task = EvmBroadcastTask.objects.create(
-            base_task=base_task,
-            address=addr,
-            chain=chain,
-            nonce=0,
-            to=recipient,
-            value=10**18,
-            gas=21_000,
-            tx_kind=TxKind.NATIVE_TRANSFER,
-            gas_price=1,
-            signed_payload="0x7261772d6279746573",
-        )
-
-        with self.assertRaisesMessage(RuntimeError, "connection timeout"):
-            broadcast_task.broadcast()
-
-        base_task.refresh_from_db()
-        broadcast_task.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
-        send_raw_mock.assert_not_called()
-        # 没有任何 GasRecharge 记录被创建
-        self.assertFalse(GasRecharge.objects.exists())
 
     def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
         native = Crypto.objects.create(

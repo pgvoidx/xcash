@@ -419,8 +419,7 @@ class EvmChainScannerServiceTests(TestCase):
         self.assertFalse(TxHash.objects.filter(broadcast_task=task.base_task).exists())
 
         chain.__dict__["w3"].eth.send_raw_transaction = Mock()
-        chain.__dict__["w3"].eth.estimate_gas = Mock(return_value=21_000)
-        # 提供 get_balance，让主动阈值通过 pre-flight 进入 estimate_gas
+        # 提供 get_balance，让主动阈值通过 pre-flight 进入真实广播。
         chain.__dict__["w3"].eth.get_balance = Mock(return_value=10**18)
         task.broadcast()
 
