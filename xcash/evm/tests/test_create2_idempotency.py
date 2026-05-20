@@ -66,6 +66,22 @@ class Create2IdempotencyTests(TestCase):
         with self.assertRaisesRegex(ValueError, "CREATE2 collection conflict"):
             ContractDeployCollectionService.create_and_schedule(**kwargs)
 
+    def test_same_chain_factory_salt_with_different_gas_is_rejected(self):
+        kwargs = {
+            "deployer": self.deployer,
+            "chain": self.chain,
+            "crypto": self.crypto,
+            "salt": b"\x97" * 32,
+            "vault_address": self.vault,
+            "expected_collect_value_raw": 1_000_000,
+            "gas": 200_000,
+        }
+        ContractDeployCollectionService.create_and_schedule(**kwargs)
+        kwargs["gas"] = 250_000
+
+        with self.assertRaisesRegex(ValueError, "CREATE2 collection conflict"):
+            ContractDeployCollectionService.create_and_schedule(**kwargs)
+
 
 class Create2IdempotencyConcurrencyTests(TransactionTestCase):
     def test_concurrent_same_chain_factory_salt_returns_single_collection(self):

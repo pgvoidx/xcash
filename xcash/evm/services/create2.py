@@ -70,7 +70,8 @@ class ContractDeployCollectionService:
         )
 
         existing = (
-            ContractDeployCollection.objects.select_for_update()
+            ContractDeployCollection.objects.select_for_update(of=("self",))
+            .select_related("broadcast_task__evm_task")
             .filter(
                 chain=chain,
                 factory_address=factory_address,
@@ -95,6 +96,8 @@ class ContractDeployCollectionService:
                 == bytes(collector_init_code_hash)
                 and int(existing.expected_collect_value_raw)
                 == int(expected_collect_value_raw)
+                and existing.broadcast_task_id is not None
+                and existing.broadcast_task.evm_task.gas == gas
             ):
                 return ContractDeployCollectionCreateResult(collection=existing)
             raise ValueError("CREATE2 collection conflict")

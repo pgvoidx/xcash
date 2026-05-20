@@ -125,7 +125,14 @@ def test_broadcasted_duplicate_group_aborts_migration():
         executor,
         "0007_evm_idempotency_constraints",
     )
-    with pytest.raises(RuntimeError) as exc_info:
+    try:
+        with pytest.raises(RuntimeError) as exc_info:
+            executor.migrate(target_after)
+    finally:
+        old_apps.get_model("evm", "X402Facilitation").objects.filter(
+            pk=conflict.pk,
+        ).update(status="dropped", failure_reason="")
+        executor = MigrationExecutor(connection)
         executor.migrate(target_after)
 
     message = str(exc_info.value)
