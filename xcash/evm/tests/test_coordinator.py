@@ -598,6 +598,7 @@ class CoordinatorIntegrationTest(TestCase):
                     "from": _VAULT_HEX,
                     "to": _RECEIVER_HEX,
                     "value": 1500000000000000000,
+                    "input": "0x",
                 }),
             ),
         )

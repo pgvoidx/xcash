@@ -9,160 +9,168 @@ from web3 import Web3
 @pytest.mark.django_db(transaction=True)
 def test_backfill_tx_kind_classifies_existing_rows_by_data():
     executor = MigrationExecutor(connection)
+    leaf_targets = executor.loader.graph.leaf_nodes()
     target_before = _targets_with_evm(
         executor,
         "0002_alter_evmscancursor_last_error",
     )
-    executor.migrate(target_before)
-    old_apps = executor.loader.project_state(target_before).apps
-    old_evm_broadcast_task = old_apps.get_model(
-        "evm",
-        "EvmBroadcastTask",
-    )
-
-    chain = _create_minimal_chain(old_apps, suffix="backfill")
-    address = _create_minimal_address(old_apps, suffix="backfill")
-
-    old_evm_broadcast_task.objects.create(
-        address=address,
-        chain=chain,
-        nonce=0,
-        to=Web3.to_checksum_address("0x" + "a" * 40),
-        value=0,
-        data="",
-        gas=21000,
-    )
-    old_evm_broadcast_task.objects.create(
-        address=address,
-        chain=chain,
-        nonce=1,
-        to=Web3.to_checksum_address("0x" + "a" * 40),
-        value=0,
-        data="0x",
-        gas=21000,
-    )
-    old_evm_broadcast_task.objects.create(
-        address=address,
-        chain=chain,
-        nonce=2,
-        to=Web3.to_checksum_address("0x" + "b" * 40),
-        value=0,
-        data="0xa9059cbb0000",
-        gas=60000,
-    )
-
-    executor = MigrationExecutor(connection)
-    target_after = _targets_with_evm(
-        executor,
-        "0003_add_tx_kind_to_evm_broadcast_task",
-    )
-    executor.migrate(target_after)
-    new_apps = executor.loader.project_state(target_after).apps
-    new_evm_broadcast_task = new_apps.get_model(
-        "evm",
-        "EvmBroadcastTask",
-    )
-
-    rows = list(
-        new_evm_broadcast_task.objects.filter(
-            address_id=address.pk,
-            chain_id=chain.pk,
+    try:
+        executor.migrate(target_before)
+        old_apps = executor.loader.project_state(target_before).apps
+        old_evm_broadcast_task = old_apps.get_model(
+            "evm",
+            "EvmBroadcastTask",
         )
-        .order_by("nonce")
-        .values("nonce", "tx_kind")
-    )
-    assert rows == [
-        {"nonce": 0, "tx_kind": "native_transfer"},
-        {"nonce": 1, "tx_kind": "native_transfer"},
-        {"nonce": 2, "tx_kind": "contract_call"},
-    ]
+
+        chain = _create_minimal_chain(old_apps, suffix="backfill")
+        address = _create_minimal_address(old_apps, suffix="backfill")
+
+        old_evm_broadcast_task.objects.create(
+            address=address,
+            chain=chain,
+            nonce=0,
+            to=Web3.to_checksum_address("0x" + "a" * 40),
+            value=0,
+            data="",
+            gas=21000,
+        )
+        old_evm_broadcast_task.objects.create(
+            address=address,
+            chain=chain,
+            nonce=1,
+            to=Web3.to_checksum_address("0x" + "a" * 40),
+            value=0,
+            data="0x",
+            gas=21000,
+        )
+        old_evm_broadcast_task.objects.create(
+            address=address,
+            chain=chain,
+            nonce=2,
+            to=Web3.to_checksum_address("0x" + "b" * 40),
+            value=0,
+            data="0xa9059cbb0000",
+            gas=60000,
+        )
+
+        executor = MigrationExecutor(connection)
+        target_after = _targets_with_evm(
+            executor,
+            "0003_add_tx_kind_to_evm_broadcast_task",
+        )
+        executor.migrate(target_after)
+        new_apps = executor.loader.project_state(target_after).apps
+        new_evm_broadcast_task = new_apps.get_model(
+            "evm",
+            "EvmBroadcastTask",
+        )
+
+        rows = list(
+            new_evm_broadcast_task.objects.filter(
+                address_id=address.pk,
+                chain_id=chain.pk,
+            )
+            .order_by("nonce")
+            .values("nonce", "tx_kind")
+        )
+        assert rows == [
+            {"nonce": 0, "tx_kind": "native_transfer"},
+            {"nonce": 1, "tx_kind": "native_transfer"},
+            {"nonce": 2, "tx_kind": "contract_call"},
+        ]
+    finally:
+        MigrationExecutor(connection).migrate(leaf_targets)
 
 
 @pytest.mark.django_db(transaction=True)
 def test_normalize_tx_kind_preserves_valid_rows_and_repairs_legacy_values():
     executor = MigrationExecutor(connection)
+    leaf_targets = executor.loader.graph.leaf_nodes()
     target_before = _targets_with_evm(
         executor,
         "0003_add_tx_kind_to_evm_broadcast_task",
     )
-    executor.migrate(target_before)
-    old_apps = executor.loader.project_state(target_before).apps
-    old_evm_broadcast_task = old_apps.get_model(
-        "evm",
-        "EvmBroadcastTask",
-    )
-
-    chain = _create_minimal_chain(old_apps, suffix="normalize")
-    address = _create_minimal_address(old_apps, suffix="normalize")
-
-    _create_old_task(
-        old_evm_broadcast_task,
-        address=address,
-        chain=chain,
-        nonce=0,
-        data="",
-        tx_kind="native_transfer",
-    )
-    _create_old_task(
-        old_evm_broadcast_task,
-        address=address,
-        chain=chain,
-        nonce=1,
-        data="0xa9059cbb0000",
-        tx_kind="contract_call",
-    )
-    _create_old_task(
-        old_evm_broadcast_task,
-        address=address,
-        chain=chain,
-        nonce=2,
-        data="",
-        tx_kind="",
-    )
-    _create_old_task(
-        old_evm_broadcast_task,
-        address=address,
-        chain=chain,
-        nonce=3,
-        data="0x",
-        tx_kind="legacy",
-    )
-    _create_old_task(
-        old_evm_broadcast_task,
-        address=address,
-        chain=chain,
-        nonce=4,
-        data="0xa9059cbb0000",
-        tx_kind="legacy",
-    )
-
-    executor = MigrationExecutor(connection)
-    target_after = _targets_with_evm(
-        executor,
-        "0004_add_tx_kind_check_constraint",
-    )
-    executor.migrate(target_after)
-    new_apps = executor.loader.project_state(target_after).apps
-    new_evm_broadcast_task = new_apps.get_model(
-        "evm",
-        "EvmBroadcastTask",
-    )
-
-    rows = list(
-        new_evm_broadcast_task.objects.filter(
-            address_id=address.pk,
-            chain_id=chain.pk,
+    try:
+        executor.migrate(target_before)
+        old_apps = executor.loader.project_state(target_before).apps
+        old_evm_broadcast_task = old_apps.get_model(
+            "evm",
+            "EvmBroadcastTask",
         )
-        .order_by("nonce")
-        .values("nonce", "tx_kind")
-    )
-    assert rows == [
-        {"nonce": 0, "tx_kind": "native_transfer"},
-        {"nonce": 1, "tx_kind": "contract_call"},
-        {"nonce": 2, "tx_kind": "native_transfer"},
-        {"nonce": 3, "tx_kind": "native_transfer"},
-        {"nonce": 4, "tx_kind": "contract_call"},
-    ]
+
+        chain = _create_minimal_chain(old_apps, suffix="normalize")
+        address = _create_minimal_address(old_apps, suffix="normalize")
+
+        _create_old_task(
+            old_evm_broadcast_task,
+            address=address,
+            chain=chain,
+            nonce=0,
+            data="",
+            tx_kind="native_transfer",
+        )
+        _create_old_task(
+            old_evm_broadcast_task,
+            address=address,
+            chain=chain,
+            nonce=1,
+            data="0xa9059cbb0000",
+            tx_kind="contract_call",
+        )
+        _create_old_task(
+            old_evm_broadcast_task,
+            address=address,
+            chain=chain,
+            nonce=2,
+            data="",
+            tx_kind="",
+        )
+        _create_old_task(
+            old_evm_broadcast_task,
+            address=address,
+            chain=chain,
+            nonce=3,
+            data="0x",
+            tx_kind="legacy",
+        )
+        _create_old_task(
+            old_evm_broadcast_task,
+            address=address,
+            chain=chain,
+            nonce=4,
+            data="0xa9059cbb0000",
+            tx_kind="legacy",
+        )
+
+        executor = MigrationExecutor(connection)
+        target_after = _targets_with_evm(
+            executor,
+            "0004_add_tx_kind_check_constraint",
+        )
+        executor.migrate(target_after)
+        new_apps = executor.loader.project_state(target_after).apps
+        new_evm_broadcast_task = new_apps.get_model(
+            "evm",
+            "EvmBroadcastTask",
+        )
+
+        rows = list(
+            new_evm_broadcast_task.objects.filter(
+                address_id=address.pk,
+                chain_id=chain.pk,
+            )
+            .order_by("nonce")
+            .values("nonce", "tx_kind")
+        )
+        assert rows == [
+            {"nonce": 0, "tx_kind": "native_transfer"},
+            {"nonce": 1, "tx_kind": "contract_call"},
+            {"nonce": 2, "tx_kind": "native_transfer"},
+            {"nonce": 3, "tx_kind": "native_transfer"},
+            {"nonce": 4, "tx_kind": "contract_call"},
+        ]
+    finally:
+        MigrationExecutor(connection).migrate(leaf_targets)
 
 
 def _create_old_task(evm_broadcast_task, *, address, chain, nonce, data, tx_kind):

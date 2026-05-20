@@ -7,137 +7,149 @@ from web3 import Web3
 @pytest.mark.django_db(transaction=True)
 def test_unbroadcast_duplicate_groups_are_marked_dropped_before_constraints():
     executor = MigrationExecutor(connection)
+    leaf_targets = executor.loader.graph.leaf_nodes()
     target_before = _targets_with_evm(
         executor,
         "0006_alter_contractdeploycollection_failure_reason_and_more",
     )
-    executor.migrate(target_before)
-    old_apps = executor.loader.project_state(target_before).apps
+    try:
+        executor.migrate(target_before)
+        old_apps = executor.loader.project_state(target_before).apps
 
-    chain = _create_minimal_chain(old_apps, suffix="idem-clean")
-    crypto = _create_minimal_crypto(old_apps, suffix="idem-clean")
-    address = _create_minimal_address(old_apps, suffix="idem-clean")
+        chain = _create_minimal_chain(old_apps, suffix="idem-clean")
+        crypto = _create_minimal_crypto(old_apps, suffix="idem-clean")
+        address = _create_minimal_address(old_apps, suffix="idem-clean")
 
-    x402_keep = _create_x402(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        nonce=b"\x11" * 32,
-    )
-    x402_drop = _create_x402(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        nonce=b"\x11" * 32,
-    )
-    create2_salt_keep = _create_create2(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        salt=b"\x21" * 32,
-        collector_suffix="22",
-    )
-    create2_salt_drop = _create_create2(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        salt=b"\x21" * 32,
-        collector_suffix="23",
-    )
-    create2_collector_keep = _create_create2(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        salt=b"\x24" * 32,
-        collector_suffix="25",
-    )
-    create2_collector_drop = _create_create2(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        salt=b"\x26" * 32,
-        collector_suffix="25",
-    )
+        x402_keep = _create_x402(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            nonce=b"\x11" * 32,
+        )
+        x402_drop = _create_x402(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            nonce=b"\x11" * 32,
+        )
+        create2_salt_keep = _create_create2(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            salt=b"\x21" * 32,
+            collector_suffix="22",
+        )
+        create2_salt_drop = _create_create2(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            salt=b"\x21" * 32,
+            collector_suffix="23",
+        )
+        create2_collector_keep = _create_create2(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            salt=b"\x24" * 32,
+            collector_suffix="25",
+        )
+        create2_collector_drop = _create_create2(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            salt=b"\x26" * 32,
+            collector_suffix="25",
+        )
 
-    executor = MigrationExecutor(connection)
-    target_after = _targets_with_evm(
-        executor,
-        "0007_evm_idempotency_constraints",
-    )
-    executor.migrate(target_after)
-    new_apps = executor.loader.project_state(target_after).apps
-    x402_model = new_apps.get_model("evm", "X402Facilitation")
-    create2_model = new_apps.get_model("evm", "ContractDeployCollection")
+        executor = MigrationExecutor(connection)
+        target_after = _targets_with_evm(
+            executor,
+            "0007_evm_idempotency_constraints",
+        )
+        executor.migrate(target_after)
+        new_apps = executor.loader.project_state(target_after).apps
+        x402_model = new_apps.get_model("evm", "X402Facilitation")
+        create2_model = new_apps.get_model("evm", "ContractDeployCollection")
 
-    assert x402_model.objects.get(pk=x402_keep.pk).status == "created"
-    x402_later = x402_model.objects.get(pk=x402_drop.pk)
-    assert x402_later.status == "dropped"
-    assert x402_later.failure_reason == ""
+        assert x402_model.objects.get(pk=x402_keep.pk).status == "created"
+        x402_later = x402_model.objects.get(pk=x402_drop.pk)
+        assert x402_later.status == "dropped"
+        assert x402_later.failure_reason == ""
 
-    assert create2_model.objects.get(pk=create2_salt_keep.pk).status == "created"
-    create2_salt_later = create2_model.objects.get(pk=create2_salt_drop.pk)
-    assert create2_salt_later.status == "dropped"
-    assert create2_salt_later.failure_reason == ""
+        assert create2_model.objects.get(pk=create2_salt_keep.pk).status == "created"
+        create2_salt_later = create2_model.objects.get(pk=create2_salt_drop.pk)
+        assert create2_salt_later.status == "dropped"
+        assert create2_salt_later.failure_reason == ""
 
-    assert create2_model.objects.get(pk=create2_collector_keep.pk).status == "created"
-    create2_collector_later = create2_model.objects.get(pk=create2_collector_drop.pk)
-    assert create2_collector_later.status == "dropped"
-    assert create2_collector_later.failure_reason == ""
+        assert (
+            create2_model.objects.get(pk=create2_collector_keep.pk).status == "created"
+        )
+        create2_collector_later = create2_model.objects.get(
+            pk=create2_collector_drop.pk,
+        )
+        assert create2_collector_later.status == "dropped"
+        assert create2_collector_later.failure_reason == ""
+    finally:
+        MigrationExecutor(connection).migrate(leaf_targets)
 
 
 @pytest.mark.django_db(transaction=True)
 def test_broadcasted_duplicate_group_aborts_migration():
     executor = MigrationExecutor(connection)
+    leaf_targets = executor.loader.graph.leaf_nodes()
     target_before = _targets_with_evm(
         executor,
         "0006_alter_contractdeploycollection_failure_reason_and_more",
     )
-    executor.migrate(target_before)
-    old_apps = executor.loader.project_state(target_before).apps
-
-    chain = _create_minimal_chain(old_apps, suffix="idem-conflict")
-    crypto = _create_minimal_crypto(old_apps, suffix="idem-conflict")
-    address = _create_minimal_address(old_apps, suffix="idem-conflict")
-    keep = _create_x402(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        nonce=b"\x31" * 32,
-    )
-    conflict = _create_x402(
-        old_apps,
-        chain=chain,
-        crypto=crypto,
-        address=address,
-        nonce=b"\x31" * 32,
-        status="broadcasted",
-    )
-
-    executor = MigrationExecutor(connection)
-    target_after = _targets_with_evm(
-        executor,
-        "0007_evm_idempotency_constraints",
-    )
     try:
-        with pytest.raises(RuntimeError) as exc_info:
-            executor.migrate(target_after)
-    finally:
-        old_apps.get_model("evm", "X402Facilitation").objects.filter(
-            pk=conflict.pk,
-        ).update(status="dropped", failure_reason="")
-        executor = MigrationExecutor(connection)
-        executor.migrate(target_after)
+        executor.migrate(target_before)
+        old_apps = executor.loader.project_state(target_before).apps
 
-    message = str(exc_info.value)
-    assert str(keep.pk) in message
-    assert str(conflict.pk) in message
+        chain = _create_minimal_chain(old_apps, suffix="idem-conflict")
+        crypto = _create_minimal_crypto(old_apps, suffix="idem-conflict")
+        address = _create_minimal_address(old_apps, suffix="idem-conflict")
+        keep = _create_x402(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            nonce=b"\x31" * 32,
+        )
+        conflict = _create_x402(
+            old_apps,
+            chain=chain,
+            crypto=crypto,
+            address=address,
+            nonce=b"\x31" * 32,
+            status="broadcasted",
+        )
+
+        executor = MigrationExecutor(connection)
+        target_after = _targets_with_evm(
+            executor,
+            "0007_evm_idempotency_constraints",
+        )
+        try:
+            with pytest.raises(RuntimeError) as exc_info:
+                executor.migrate(target_after)
+        finally:
+            old_apps.get_model("evm", "X402Facilitation").objects.filter(
+                pk=conflict.pk,
+            ).update(status="dropped", failure_reason="")
+            executor = MigrationExecutor(connection)
+            executor.migrate(target_after)
+
+        message = str(exc_info.value)
+        assert str(keep.pk) in message
+        assert str(conflict.pk) in message
+    finally:
+        MigrationExecutor(connection).migrate(leaf_targets)
 
 
 def _create_x402(
